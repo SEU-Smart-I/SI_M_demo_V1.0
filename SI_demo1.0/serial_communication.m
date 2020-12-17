@@ -35,6 +35,14 @@ numRec = 0;    	%接收字符计数
 numSend = 0;   	%发送字符计数
 strRec = '';   		%已接收的字符串
 isCameraOpened= false; %记录是否打开了摄像头 （1126）
+global numSwitch prePosition newPosition comList elementAvailable ifreceived scoms;
+numSwitch = 1;     %记录面板显示位置参数对象
+prePosition = zeros(9,3);     %存储上次指令发送后的位置
+newPosition = zeros(9,3);     %存储当前更改后还未发送的位置
+comList = {'COM16'; 'COM13'; 'COM12'; 'COM20'};      %存储每个单元对应的串口，初始化成了cell
+elementAvailable = zeros(9,1);      %存储每个单元对应按钮可用属性
+ifreceived = 0;     %记录是否接收到数据
+scoms = cell(9,1);     %存储串口对象
 %读取图片数据，只在第一次运行时读取
 % pathstr = fileparts(which(mfilename));
 % if exist([pathstr '\lamb.mat'], 'file') == 2
@@ -59,6 +67,9 @@ setappdata(hObject, 'isHexSend', isHexSend);
 setappdata(hObject, 'openData', openData);
 setappdata(hObject, 'closedData', closedData);
 setappdata(hObject,'isCameraOpened',isCameraOpened); %(1126)
+%setappdata(hObject, 'numSwitch', numSwitch);
+%setappdata(hObject, 'prePosition', prePosition);
+%setappdata(hObject, 'newPosition', newPosition);
 %初始化串口状态指示灯，串口灯默认为关闭状态
 % set(handles.lamb, 'cdata', closedData); %通过cdata来改变按钮的图标
 set(handles.lamb,'BackgroundColor',closedData);
@@ -66,13 +77,631 @@ set(handles.lamb,'BackgroundColor',closedData);
 %Update available comPorts on your computer
 set(handles.com, 'String', getAvailableComPort);
 
+positionInitiate(handles);
+
 guidata(hObject, handles);
+
+function flag = comPortOn(index, handles)
+% 打开串口
+% index 串口索引
+% strCOM 串口名
+global comList scoms;
+baud_rate = 38400;    %波特率 38400
+jiaoyan = 'none';     %校验位 无
+data_bits = 8;         %数据位 8位
+stop_bits = 1;         %终止位 1位
+scom0 = serial(comList{index});    %创建串口对象, 'timerfcn', {@dataDisp, handles}
+% 配置串口属性，指定其回调函数
+set(scom0, 'BaudRate', baud_rate, 'Parity', jiaoyan, 'DataBits',...
+    data_bits, 'StopBits', stop_bits, 'BytesAvailableFcnCount', 10,...
+    'BytesAvailableFcnMode', 'byte', 'BytesAvailableFcn', {@bytes, handles},...
+    'TimerPeriod', 0.05, 'timerfcn', {@getMessageFromComPort, handles});
+%BytesAvailableFcnMode 设置中断响应模式（有“byte”和“Terminator”两种模式可选，“byte”是达到一定字节数产生中断，“Terminator”可用作键盘某个按键事件来产生中断）
+% 将串口对象的句柄作为用户数据，存入窗口对象
+scoms{index} = scom0;
+% 尝试打开串口
+try
+    fopen(scom0);  %打开串口
+    flag = 1;
+    disp([comList{index},'打开成功!',newline])
+catch   % 若串口打开失败，提示“串口不可获得！”
+    msgbox('串口不可获得！','Error','error');
+    flag = 0;
+    %set(hObject, 'value', 0);  %弹起本按钮 
+    return;
+end
+
+function comPortOff()
+% 关闭所有串口
+% 停止并删除串口对象
+scoms = instrfind; %将所有有效的串行端口对象以 out 数组形式返回
+stopasync(scoms); %停止异步读写操作
+fclose(scoms);
+delete(scoms);
+
+%{
+function comPortOnOrOff(strCOM, flag, handles)
+% 打开或关闭串口
+% strCOM 串口名
+% flag 0 关闭；1 打开
+if flag == 1
+    baud_rate = 38400;    %波特率 38400
+    jiaoyan = 'none';     %校验位 无
+    data_bits = 8;         %数据位 8位
+    stop_bits = 1;         %终止位 1位
+    scom0 = serial(strCOM);    %创建串口对象, 'timerfcn', {@dataDisp, handles}
+    % 配置串口属性，指定其回调函数
+    set(scom0, 'BaudRate', baud_rate, 'Parity', jiaoyan, 'DataBits',...
+        data_bits, 'StopBits', stop_bits, 'BytesAvailableFcnCount', 10,...
+        'BytesAvailableFcnMode', 'byte', 'BytesAvailableFcn', {@bytes, handles},...
+        'TimerPeriod', 0.05, 'timerfcn', {@getMessageFromComPort, handles});
+    %BytesAvailableFcnMode 设置中断响应模式（有“byte”和“Terminator”两种模式可选，“byte”是达到一定字节数产生中断，“Terminator”可用作键盘某个按键事件来产生中断）
+    % 将串口对象的句柄作为用户数据，存入窗口对象
+    set(handles.figure1, 'UserData', scom0);
+    % 尝试打开串口
+    try
+        fopen(scom0);  %打开串口
+    catch   % 若串口打开失败，提示“串口不可获得！”
+        msgbox('串口不可获得！','Error','error');
+        %set(hObject, 'value', 0);  %弹起本按钮 
+        return;
+    end
+    
+else %关闭串口
+    % 停止并删除串口对象
+    scoms = instrfind; %将所有有效的串行端口对象以 out 数组形式返回
+    stopasync(scoms); %停止异步读写操作
+    fclose(scoms);
+    delete(scoms);
+end
+%}
+
+function sendCommand(index, strCMD, handles)
+% 向特定串口发送命令
+% index 控件串口索引
+% strCMD 发送命令内容
+vv =10;
+dd =13;
+global scoms;
+com = scoms{index};
+%com = get(handles.figure1, 'UserData');      %获取串口对象句柄
+numSend = getappdata(handles.figure1, 'numSend');
+val = strCMD;
+numSend = numSend + length(val);
+set(handles.trans, 'string', num2str(numSend));
+setappdata(handles.figure1, 'numSend', numSend);
+EnterSend_flag = 1;
+I_flag=0;
+if ~isempty(val)
+    %% 设置倒计数的初值
+    n = 1000;
+    while n
+        %% 获取串口的传输状态，若串口没有正在写数据，写入数据
+        str = get(com, 'TransferStatus');
+        if ~(strcmp(str, 'write') || strcmp(str, 'read&write')) 
+            if ~I_flag
+             fwrite(com, val, 'uint8', 'async'); %数据写入串口
+                I_flag=1;
+            end
+        end
+        if EnterSend_flag
+            str = get(com, 'TransferStatus');
+            if ~(strcmp(str, 'write') || strcmp(str, 'read&write'))
+                 fwrite(com, vv); %数据写入串口
+                 fwrite(com, dd); %数据写入串口
+                 break;
+            end
+        end 
+        n = n - 1; %倒计数
+    end
+end
+
+function getMessageFromComPort(obj, event, handles)
+% 从串口获取数据
+%% 获取参数
+global ifreceived;
+hasData = getappdata(handles.figure1, 'hasData'); %串口是否收到数据
+strRec = getappdata(handles.figure1, 'strRec');   %串口数据的字符串形式，定时显示该数据
+numRec = getappdata(handles.figure1, 'numRec');   %串口接收到的数据个数
+%% 若串口没有接收到数据，先尝试接收串口数据
+if ~hasData
+    bytes(obj, event, handles);
+end
+%% 若串口有数据，返回串口数据
+if hasData
+    %% 给数据显示模块加互斥锁
+    %% 在执行显示数据模块时，不接受串口数据，即不执行BytesAvailableFcn回调函数
+    setappdata(handles.figure1, 'isShow', true); 
+    %% 若要显示的字符串长度超过10000，清空显示区
+    if length(strRec) > 10000
+        strRec = '';
+        setappdata(handles.figure1, 'strRec', strRec);
+    end
+    %% 显示数据
+    set(handles.xianshi, 'string', strRec);
+    %% 更新接收计数
+    set(handles.rec,'string', numRec);
+    %% 更新hasData标志，表明串口数据已经显示
+    setappdata(handles.figure1, 'hasData', false);
+    %% 给数据显示模块解锁
+    setappdata(handles.figure1, 'isShow', false);
+    ifreceived = 1;
+    %Msg = strRec;    %获取接收到的消息
+    %清空接收区
+    %strRec = '';
+    %setappdata(handles.figure1, 'strRec', strRec);
+end
+
+function response = sendAndGetResponse(index, strCMD, handles)
+% 发送一条命令并接受一条返回消息 调用前需先打开相应串口
+% index 控件串口索引
+% strCMD 操作指令
+% handles gui句柄
+global ifreceived;
+response = '';
+%comPortOnOrOff(strCOM, 1, handles);    % 打开串口
+sendCommand(index, strCMD, handles);    %P 获取当前位置
+%等待接收数据
+while (1)
+    if (ifreceived == 1)
+        response = getappdata(handles.figure1, 'strRec');    %获取串口消息
+        ifreceived = 0;
+        setappdata(handles.figure1, 'strRec', '');
+        break;
+    end
+end
+length(response)
+%消息解码，分存
+%comPortOnOrOff(strCOM, 0, handles);    % 关闭串口
+
+%{
+function commandPDecodeByIndex(index, strPosition)
+% 根据索引按照特定格式更新单个被控单元的位置，格式为：x y z
+% index 被控元件编号
+% strPosition 位置字符串
+% strPositionFormate 位置坐标格式
+global prePosition newPosition;
+%判断最后一个字符是否为换行符
+if (strPosition(length(strPosition))) == newline
+    strPosition = strPosition(1:(length(strPosition)-1));
+end
+%字符串分割
+strNums = split(strPosition,' ');
+if (length(strNums) ~= 3)
+    disp(['输入数据格式不匹配！',newline]);
+    return;
+end
+prePosition(index, 1) = str2num(strNums{1});
+prePosition(index, 2) = str2num(strNums{2});
+prePosition(index, 3) = str2num(strNums{3});
+newPosition(index, 1) = str2num(strNums{1});
+newPosition(index, 2) = str2num(strNums{2});
+newPosition(index, 3) = str2num(strNums{3});
+%}
+
+function getCurrentPosition(index, handles)
+% 获取控件当前位置
+% index 控件索引
+% handles gui全局句柄
+global prePosition newPosition elementAvailable;
+if (index < 1 || index > 9)
+    disp(['输入索引错误！',newline]);
+    return;
+end
+if (elementAvailable(index) == 1)
+    %com = scoms{index};
+    msg = sendAndGetResponse(index, 'P', handles);
+    
+    %判断最后一个字符是否为换行符
+    if (msg(length(msg))) == char(13)
+        msg = msg(1:(length(msg)-2));
+    end
+    %字符串分割
+    strNums = split(msg,char(9));
+    if (length(strNums) ~= 3)
+        disp(['返回数据格式不匹配！',newline]);
+        
+        return;
+    end
+    prePosition(index, 1) = str2num(strNums{1});
+    prePosition(index, 2) = str2num(strNums{2});
+    prePosition(index, 3) = str2num(strNums{3});
+    newPosition(index, 1) = str2num(strNums{1});
+    newPosition(index, 2) = str2num(strNums{2});
+    newPosition(index, 3) = str2num(strNums{3});
+end
+
+function commandZEROReaction(handles)
+% 将当前位置设为原点（0,0,0）
+global numSwitch prePosition newPosition;
+%com = scoms{numSwitch};
+msg = sendAndGetResponse(numSwitch, 'ZERO', handles);
+
+%判断最后一个字符是否为换行符
+if (msg(length(msg))) == char(13)
+    msg = msg(1:(length(msg)-1));
+end
+
+switch(msg)
+    case 'E'
+        disp(['设置失败！',newline]);
+    case 'A'
+        disp(['设置成功！',newline]);
+        prePosition(numSwith,:) = [0,0,0];
+        newPosition(numSwith,:) = [0,0,0];
+        refreshGuiPosition(handles);
+    otherwise
+        disp(['返回异常！',newline]);
+        msg
+end
+
+function refreshGuiPosition(handles)
+% 刷新当前显示的坐标
+global numSwitch newPosition;
+set(handles.xPosition_edit, 'string', newPosition(numSwitch,1));
+set(handles.yPosition_edit, 'string', newPosition(numSwitch,2));
+set(handles.zPosition_edit, 'string', newPosition(numSwitch,3));
+
+function commandMoveReaction(index, cmdType, x, y, z, handles)
+% 移动到输入的坐标位置
+% index 控件索引
+% cmdType 移动方式：ABS 绝对坐标移动；REL 相对坐标移动
+% x y z 坐标
+global prePosition newPosition elementAvailable;
+
+if strcmp(cmdType,'ABS') && strcmp(cmdType,'REL')
+    disp(['移动方式输入错误！',newline]);
+    return;
+end
+% 生成命令串
+if strcmp(cmdType,'ABS')
+    cmd = ['ABS ',num2str(x),' ',num2str(y),' ',num2str(z)];
+else
+    cmd = ['REL ',num2str(x - newPosition(index,1)),' ',num2str(y - newPosition(index,2)),' ',num2str(z - newPosition(index,3))];
+end
+
+%判断索引是否合法
+if (index < 1 || index > 9)
+    disp(['输入索引错误！',newline]);
+    return;
+end
+if (elementAvailable(index) == 1)
+    %com = scoms{index};
+    msg = sendAndGetResponse(index, cmd, handles);
+    
+    %判断最后一个字符是否为换行符
+    if (msg(length(msg))) == char(13)
+        msg = msg(1:(length(msg)-1));
+    end
+    
+
+    switch(msg)
+        case 'E'
+            disp(['设置失败！',newline]);
+        case 'A'
+            disp(['设置成功！',newline]);
+            prePosition(index,:) = [x,y,z];
+            newPosition(index,:) = [x,y,z];
+        otherwise
+            disp(['返回异常！',newline]);
+            msg
+    end
+end
+
+function goTo(index,handles)
+% goto按钮功能实现
+% index 控件索引
+x = str2num(get(handles.xPosition_edit, 'string'));
+y = str2num(get(handles.yPosition_edit, 'string'));
+z = str2num(get(handles.zPosition_edit, 'string'));
+%commandMoveReaction(index, 'ABS', x, y, z, handles);     %绝对移动
+commandMoveReaction(index, 'REL', x, y, z, handles);     %相对移动
+
+%{
+function commandABSReaction(index, x, y, z)
+% 绝对坐标移动，移动到输入的坐标位置
+% index 控件索引
+% x y z 坐标
+global prePosition newPosition elementAvailable scoms;
+% 生成命令串
+cmd = ['ABS ',num2str(x),' ',num2str(y),' ',num2str(z)];
+%判断索引是否合法
+if (index < 1 || index > 9)
+    disp('输入索引错误！/n');
+    return;
+end
+if (elementAvailable(index) == 1)
+    com = scoms{index};
+    msg = sendAndGetResponse(com, cmd, handles);
+    
+    %判断最后一个字符是否为换行符
+    if (msg(length(msg))) == newline
+        msg = msg(1:(length(msg)-1));
+    end
+    
+    switch(msg)
+        case 'E'
+            disp('设置失败！/n');
+        case 'A'
+            disp('设置成功！/n');
+            prePosition(numSwith,:) = [x,y,z];
+            newPosition(numSwith,:) = [x,y,z];
+            refreshGuiPosition(handles);
+        otherwise
+            disp('返回异常/n');
+            msg
+    end
+end
+
+function commandRELReaction(index, x, y, z)
+% 相对坐标移动，移动到输入的坐标位置
+% index 控件索引
+% x y z 坐标
+global prePosition newPosition elementAvailable scoms;
+% 生成命令串
+cmd = ['REL ',num2str(x - newPosition(index,1)),' ',num2str(y - newPosition(index,2)),' ',num2str(z - newPosition(index,3))];
+%判断索引是否合法
+if (index < 1 || index > 9)
+    disp('输入索引错误！/n');
+    return;
+end
+if (elementAvailable(index) == 1)
+    com = scoms{index};
+    msg = sendAndGetResponse(com, cmd, handles);
+    
+    %判断最后一个字符是否为换行符
+    if (msg(length(msg))) == newline
+        msg = msg(1:(length(msg)-1));
+    end
+    
+    switch(msg)
+        case 'E'
+            disp('设置失败！/n');
+        case 'A'
+            disp('设置成功！/n');
+            prePosition(numSwith,:) = [x,y,z];
+            newPosition(numSwith,:) = [x,y,z];
+            refreshGuiPosition(handles);
+        otherwise
+            disp('返回异常/n');
+            msg
+    end
+end
+%}
+
+function msg = removeEndEnterChar(str)
+% 移除字符串末尾的回车
+%判断最后一个字符是否为换行符
+if (str(length(str))) == char(13)
+	msg = str(1:(length(str)-1));
+end
+
+function commandSTOPReaction(handles)
+% 停止所有控件的任何移动
+global numSwitch elementAvailable;
+flag = [];
+i = numSwitch;
+%for i = 1:9
+    if elementAvailable(i) == 1
+        %com = scoms{i};
+        msg = sendAndGetResponse(i, 'STOP', handles);
+        
+        %判断最后一个字符是否为换行符
+        if (msg(length(msg))) == char(13)
+            msg = msg(1:(length(msg)-1));
+        end
+        
+        if (msg ~= 'A')
+            flag(i) = 0;
+            disp(['停止失败！',newline])
+        else
+            flag(i) = 1;
+            getCurrentPosition(i, handles);     %获取新位置
+        end
+    end
+%end
+flag
+% 若停止成功更新当前控件位置显示
+if (flag(i) == 1)
+    refreshGuiPosition(handles);
+end
+
+
+function positionInitiate(handles)
+% 从各可控元件获取初始位置
+global comList elementAvailable;
+availableCom = getAvailableComPort;     %获取有效串口列表
+%验证目标串口是否可用
+for i = 1:size(comList, 1)
+    for j = 1:size(availableCom, 1)
+        if strcmp(comList{i},availableCom{j})
+            elementAvailable(i) = 1;
+        end
+    end
+end
+setButtonEnableOfElement(elementAvailable,handles);     %设置按钮可用
+
+
+%msg = sendAndGetResponse(1, 'P', handles);     %获取控件位置
+%comPortOff();
+%打开所有串口
+for i = 1:9
+    if elementAvailable(i) == 1
+        flag = comPortOn(i, handles);	% 打开串口com1
+        if flag == 0
+            elementAvailable(i) = 0;
+        else
+            getCurrentPosition(i, handles);     %获取控件位置
+        end
+    end
+end
+
+
+
+refreshGuiPosition(handles);     %刷新显示
+%{
+for i = 1:9
+    if elementAvailable(i) == 1
+        str1 = comList{i};    %串口名，值为com1
+        msg = sendAndGetResponse(str1, 'P', handles);     %获取控件位置
+        %更新控件坐标
+    end
+end
+%}
+
+
+
+function setButtonEnableOfElement(a,handles)
+% 按照标识数组设置选项卡按钮是否可用
+% a 标识数组
+% 0 off; 1 on
+if a(1) == 0
+    set(handles.microscope_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.microscope_pushbutton,'Enable', 'off');
+else
+    set(handles.microscope_pushbutton, 'ForegroundColor', 'black');
+    set(handles.microscope_pushbutton,'Enable', 'on');
+end
+if a(2) == 0
+    set(handles.injection1_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection1_pushbutton,'Enable', 'off');
+else
+    set(handles.injection1_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection1_pushbutton,'Enable', 'on');
+end
+if a(3) == 0
+    set(handles.injection2_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection2_pushbutton,'Enable', 'off');
+else
+    set(handles.injection2_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection2_pushbutton,'Enable', 'on');
+end
+if a(4) == 0
+    set(handles.injection3_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection3_pushbutton,'Enable', 'off');
+else
+    set(handles.injection3_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection3_pushbutton,'Enable', 'on');
+end
+if a(5) == 0
+    set(handles.injection4_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection4_pushbutton,'Enable', 'off');
+else
+    set(handles.injection4_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection4_pushbutton, 'Enable', 'on');
+end
+if a(6) == 0
+    set(handles.injection5_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection5_pushbutton,'Enable', 'off');
+else
+    set(handles.injection5_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection5_pushbutton,'Enable', 'on');
+end
+if a(7) == 0
+    set(handles.injection6_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection6_pushbutton,'Enable', 'off');
+else
+    set(handles.injection6_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection6_pushbutton,'Enable', 'on');
+end
+if a(8) == 0
+    set(handles.injection7_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection7_pushbutton,'Enable', 'off');
+else
+    set(handles.injection7_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection7_pushbutton,'Enable', 'on');
+end
+if a(9) == 0
+    set(handles.injection8_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+    set(handles.injection8_pushbutton,'Enable', 'off');
+else
+    set(handles.injection8_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+    set(handles.injection8_pushbutton,'Enable', 'on');
+end
+
+function setButtonColorOfElements(a,handles)
+% 按照标识数组设置选项卡按钮字体颜色
+% a 标识数组
+% 0 设置为灰色 [0.6,0.6,0.6]； 1 设置为黑色
+if a(1) == 0
+    set(handles.microscope_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.microscope_pushbutton, 'FontWeight', 'bold');
+end
+if a(2) == 0
+    set(handles.injection1_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection1_pushbutton, 'FontWeight', 'bold');
+end
+if a(3) == 0
+    set(handles.injection2_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection2_pushbutton, 'FontWeight', 'bold');
+end
+if a(4) == 0
+    set(handles.injection3_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection3_pushbutton, 'FontWeight', 'bold');
+end
+if a(5) == 0
+    set(handles.injection4_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection4_pushbutton, 'FontWeight', 'bold');
+end
+if a(6) == 0
+    set(handles.injection5_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection5_pushbutton, 'FontWeight', 'bold');
+end
+if a(7) == 0
+    set(handles.injection6_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection6_pushbutton, 'FontWeight', 'bold');
+end
+if a(8) == 0
+    set(handles.injection7_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection7_pushbutton, 'FontWeight', 'bold');
+end
+if a(9) == 0
+    set(handles.injection8_pushbutton, 'FontWeight', 'normal');
+else
+    set(handles.injection8_pushbutton, 'FontWeight', 'bold');
+end
+
+function buttonElementAction(a,handles)
+% 被控元件选择按钮响应
+% a 被控元件的编号
+%newSwitch = getappdata(handles.figure1, 'numSwitch');
+global numSwitch newPosition;
+if numSwitch ~= a
+    %输入框空异常处理
+    %positionInitiate();
+    %str2num(get(handles.xPosition_edit,'string'))
+    if isempty(str2num(get(handles.xPosition_edit,'string'))) || isempty(str2num(get(handles.yPosition_edit,'string'))) || isempty(str2num(get(handles.zPosition_edit,'string')))
+        disp(['请输入数字！',newline])
+        return;
+    end  
+    %保存上个控件位置
+    newPosition(numSwitch,1) = str2num(get(handles.xPosition_edit,'string'));
+    newPosition(numSwitch,2) = str2num(get(handles.yPosition_edit,'string'));
+    newPosition(numSwitch,3) = str2num(get(handles.zPosition_edit,'string'));
+    %更新按钮字体颜色
+    flag = zeros(1,9);
+    numSwitch = a;
+    flag(numSwitch) = 1;
+    setButtonColorOfElements(flag,handles);
+    %更新位置数据
+    set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+    set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+    set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+end
 
 function varargout = serial_communication_OutputFcn(hObject, eventdata, handles) 
 varargout{1} = handles.output;
 
 function com_Callback(hObject, ~, handles)
-
+ 
 function com_CreateFcn(hObject, eventdata, handles)
 if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
     set(hObject,'BackgroundColor','white');
@@ -110,8 +739,8 @@ function start_serial_Callback(hObject, eventdata, handles)
 %   【打开/关闭串口】按钮的回调函数
 %    打开串口，并初始化相关参数
 %% 若按下【打开串口】按钮，打开串口
-global vv
-global dd
+%global vv
+%global dd
 if get(hObject, 'value')
     %% 获取串口的端口名
     com_n = sprintf('com%d', get(handles.com, 'value'));
@@ -527,4 +1156,432 @@ if CameraOpenFlag
        preview(obj);
        isCameraStopFlag = false;
     end
+end
+
+
+
+function xPosition_edit_Callback(hObject, eventdata, handles)
+% hObject    handle to xPosition_edit (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of xPosition_edit as text
+%        str2double(get(hObject,'String')) returns contents of xPosition_edit as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function xPosition_edit_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to xPosition_edit (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in radiobutton6.
+function radiobutton6_Callback(hObject, ~, handles)
+% hObject    handle to radiobutton6 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of radiobutton6
+
+
+% --- Executes on button press in xMinus_pushbutton.
+function xMinus_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to xMinus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch newPosition;
+if get(hObject,'value')
+    if get(handles.fine_checkbox,'value')
+        newPosition(numSwitch,1) = newPosition(numSwitch,1) - 0.01;
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+    else
+        newPosition(numSwitch,1) = newPosition(numSwitch,1) - 1;
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+    end
+end
+
+
+% --- If Enable == 'on', executes on mouse press in 5 pixel border.
+% --- Otherwise, executes on mouse press in 5 pixel border or over xMinus_pushbutton.
+function xMinus_pushbutton_ButtonDownFcn(hObject, eventdata, handles)
+% hObject    handle to xMinus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+
+% --- Executes on button press in xPlus_pushbutton.
+function xPlus_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to xPlus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch newPosition;
+if get(hObject,'value')
+    
+    if get(handles.fine_checkbox,'value')
+        newPosition(numSwitch,1) = newPosition(numSwitch,1) + 0.01;
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+    else
+        newPosition(numSwitch,1) = newPosition(numSwitch,1) + 1;
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+    end
+end
+%{
+if isempty(str2num(get(handles.xPosition_edit,'string')))
+    set(hObject, Enable, 'off');
+else
+    set(hObject, Enable, 'on');
+end
+%}
+
+
+% --- Executes on button press in fine_checkbox.
+function fine_checkbox_Callback(hObject, eventdata, handles)
+% hObject    handle to fine_checkbox (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of fine_checkbox
+
+
+% --- Executes on button press in sendCommond_pushbutton.
+function sendCommond_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to sendCommond_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch;
+if get(hObject, 'value')
+    %positionInitiate(handles);
+    goTo(numSwitch,handles);
+end
+
+
+function yPosition_edit_Callback(hObject, eventdata, handles)
+% hObject    handle to yPosition_edit (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of yPosition_edit as text
+%        str2double(get(hObject,'String')) returns contents of yPosition_edit as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function yPosition_edit_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to yPosition_edit (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in yMinus_pushbutton.
+function yMinus_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to yMinus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch newPosition;
+if get(hObject,'value')
+    if get(handles.fine_checkbox,'value')
+        newPosition(numSwitch,2) = newPosition(numSwitch,2) - 0.01;
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+    else
+        newPosition(numSwitch,2) = newPosition(numSwitch,2) - 1;
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+    end
+end
+
+
+% --- Executes on button press in yPlus_pushbutton.
+function yPlus_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to yPlus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch newPosition;
+if get(hObject,'value')
+    if get(handles.fine_checkbox,'value')
+        newPosition(numSwitch,2) = newPosition(numSwitch,2) + 0.01;
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+    else
+        newPosition(numSwitch,2) = newPosition(numSwitch,2) + 1;
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+    end
+end
+
+
+function zPosition_edit_Callback(hObject, eventdata, handles)
+% hObject    handle to zPosition_edit (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of zPosition_edit as text
+%        str2double(get(hObject,'String')) returns contents of zPosition_edit as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function zPosition_edit_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to zPosition_edit (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in zMinus_pushbutton.
+function zMinus_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to zMinus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch newPosition;
+if get(hObject,'value')
+    if get(handles.fine_checkbox,'value')
+        newPosition(numSwitch,3) = newPosition(numSwitch,3) - 0.01;
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+    else
+        newPosition(numSwitch,3) = newPosition(numSwitch,3) - 1;
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+    end
+end
+
+
+% --- Executes on button press in zPlus_pushbutton.
+function zPlus_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to zPlus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch newPosition;
+if get(hObject,'value')
+    if get(handles.fine_checkbox,'value')
+        newPosition(numSwitch,3) = newPosition(numSwitch,3) + 0.01;
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+    else
+        newPosition(numSwitch,3) = newPosition(numSwitch,3) + 1;
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+    end
+end
+
+
+% --- Executes on button press in microscope_pushbutton.
+function microscope_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to microscope_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(1,handles);
+end
+
+
+
+% --- Executes on button press in injection3_pushbutton.
+function injection3_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection3_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(4,handles);
+end
+
+
+% --- Executes on button press in injection2_pushbutton.
+function injection2_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection2_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(3,handles);
+end
+
+
+% --- Executes on button press in injection1_pushbutton.
+function injection1_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection1_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(2,handles);
+end
+
+
+% --- Executes on button press in injection5_pushbutton.
+function injection5_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection5_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(6,handles);
+end
+
+
+% --- Executes on button press in injection4_pushbutton.
+function injection4_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection4_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(5,handles);
+end
+
+
+% --- Executes on button press in injection6_pushbutton.
+function injection6_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection6_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(7,handles);
+end
+
+
+% --- Executes on button press in injection7_pushbutton.
+function injection7_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection7_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(8,handles);
+end
+
+
+% --- Executes on button press in injection8_pushbutton.
+function injection8_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to injection8_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject, 'value')
+    buttonElementAction(9,handles);
+end
+
+
+% --- Executes during object creation, after setting all properties.
+function uipanel7_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to uipanel7 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function microscope_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to microscope_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection1_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection1_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection2_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection2_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection3_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection3_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection4_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection4_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection5_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection5_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection6_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection6_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection7_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection7_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes during object creation, after setting all properties.
+function injection8_pushbutton_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to injection8_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- If Enable == 'on', executes on mouse press in 5 pixel border.
+% --- Otherwise, executes on mouse press in 5 pixel border or over xPlus_pushbutton.
+function xPlus_pushbutton_ButtonDownFcn(hObject, eventdata, handles)
+% hObject    handle to xPlus_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+
+
+
+function xianshi_Callback(hObject, eventdata, handles)
+% hObject    handle to xianshi (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of xianshi as text
+%        str2double(get(hObject,'String')) returns contents of xianshi as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function xianshi_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to xianshi (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in pushbutton24.
+function pushbutton24_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton24 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject,'value')
+    commandSTOPReaction(handles);
+end
+
+
+% --- Executes on button press in zero_pushbutton.
+function zero_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to zero_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject,'value')
+    commandZEROReaction(handles);
 end
