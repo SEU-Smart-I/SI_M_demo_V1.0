@@ -76,7 +76,9 @@ set(handles.lamb,'BackgroundColor',closedData);
 
 %Update available comPorts on your computer
 set(handles.com, 'String', getAvailableComPort);
-
+%define the WindowButtonDownFcn
+set(gcf, 'WindowButtonDownFcn', {@ButtonDowncallback, handles});
+set(gcf, 'WindowButtonMotionFcn', {@callback, handles});
 positionInitiate(handles);
 
 guidata(hObject, handles);
@@ -1074,9 +1076,10 @@ function CameraButton_Callback(hObject, eventdata, handles)
 % hObject    handle to CameraButton (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-global obj
+global obj;
 global CameraOpenFlag;
 global isCameraStopFlag;
+global tb;
 CameraOpenFlag = getappdata(handles.figure1, 'isCameraOpened');
 if ~CameraOpenFlag
     set(handles.CameraButton, 'string',"关闭摄像头",'ForegroundColor',[1 0 0]);
@@ -1087,6 +1090,7 @@ if ~CameraOpenFlag
 %     src = getselectedsource(vid);
     set(obj,'FramesPerTrigger',1);
     set(obj,'TriggerRepeat',Inf);
+    set(obj,'FrameGrabInterval',1);
     usbVidRes1 = get(obj,'videoResolution');
     nBands1 = get(obj,'NumberOfBands');
     axes(handles.Image_display);
@@ -1097,6 +1101,9 @@ if ~CameraOpenFlag
     isCameraOpened = true;
     setappdata(handles.figure1,'isCameraOpened',isCameraOpened); 
     isCameraStopFlag = false;
+    tb = text;
+    set(gcf,'WindowButtonMotionFcn',@callback);
+    set(hImage1, 'ButtonDownFcn', {@ButtonDowncallback,handles});
 else
     set(hObject, 'String', "开启摄像头",'ForegroundColor',[0 0 1]);  		%设置本按钮文本
     closepreview(obj);
@@ -1104,6 +1111,9 @@ else
     isCameraOpened = false;
     setappdata(handles.figure1,'isCameraOpened',isCameraOpened); 
     obj = [];
+    tb = text;
+    set(gcf,'WindowButtonMotionFcn',@callback);
+    set(gcf,'WindowButtonDownFcn', @ButtonDowncallback);
 %     delete(gcf);
 end
 
@@ -1117,7 +1127,28 @@ function Image_display_CreateFcn(hObject, eventdata, handles)
 % handles    empty - handles not created until after all CreateFcns called
 
 % Hint: place code in OpeningFcn to populate Image_display
+global tb;
+global loc;
+tb = text;
+set(gcf,'WindowButtonMotionFcn',@callback);
+set(gcf, 'WindowButtonDownFcn', @ButtonDowncallback);
 
+
+function callback(handles,hObject, event)
+%     global tb
+%     loc = get(gca, 'CurrentPoint');
+%     loc = loc([1 3]);
+%     set(tb, 'string', num2str(loc), 'position', loc);
+
+function ButtonDowncallback(obj, event, handles)
+     global tb;
+     global loc;
+     global isButtonDown;
+     isButtonDown = true;
+     loc = get(gca, 'CurrentPoint');
+     loc = loc(1,(1:2));
+     set(tb, 'string', num2str(loc), 'position', loc); 
+     set(handles.PositionBox,'String',loc);
 
 
 
@@ -1585,3 +1616,18 @@ function zero_pushbutton_Callback(hObject, eventdata, handles)
 if get(hObject,'value')
     commandZEROReaction(handles);
 end
+
+
+% --- Executes during object creation, after setting all properties.
+function PositionBox_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to PositionBox (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+
+% --- Executes on mouse press over axes background.
+function Image_display_ButtonDownFcn(hObject, eventdata, handles)
+% hObject    handle to Image_display (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+pos = get(hObject,'Currentpoint');
