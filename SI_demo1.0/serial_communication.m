@@ -35,14 +35,21 @@ numRec = 0;    	%接收字符计数
 numSend = 0;   	%发送字符计数
 strRec = '';   		%已接收的字符串
 isCameraOpened= false; %记录是否打开了摄像头 （1126）
-global numSwitch prePosition newPosition comList elementAvailable ifreceived scoms;
+global numSwitch prePosition newPosition comList elementAvailable ifreceived scoms angleOffset axisLimits;
+global absZero angleXOZ;
 numSwitch = 1;     %记录面板显示位置参数对象
 prePosition = zeros(9,3);     %存储上次指令发送后的位置
 newPosition = zeros(9,3);     %存储当前更改后还未发送的位置
-comList = {'COM16'; 'COM13'; 'COM12'; 'COM20'};      %存储每个单元对应的串口，初始化成了cell
+comList = {'COM8'; 'COM22'; 'COM21'; 'COM11'};      %存储每个单元对应的串口，初始化成了cell
 elementAvailable = zeros(9,1);      %存储每个单元对应按钮可用属性
 ifreceived = 0;     %记录是否接收到数据
 scoms = cell(9,1);     %存储串口对象
+angleOffset = [0,0,0,19,19,0,0,0,0];     %存储微操xoy平面旋转角
+axisLimits = zeros(9,6);     %存储各控件坐标极限
+axisLimits(1,:) = [-2429000,0,0,2300000,-2494000,0];     %显微镜位移极限
+axisLimits(4,:) = [-2020000,0,0,1340000,-1970000,0];     %微操3位移极限
+absZero = zeros(9,3);     %存储控件绝对远点坐标
+angleXOZ = [0,0,0,66,0,0,0,0,0];     %存储微操xoz夹角
 %读取图片数据，只在第一次运行时读取
 % pathstr = fileparts(which(mfilename));
 % if exist([pathstr '\lamb.mat'], 'file') == 2
@@ -83,11 +90,63 @@ positionInitiate(handles);
 
 guidata(hObject, handles);
 
+function saveABSZeroToConfigFile()
+% 将绝对原点坐标保存到设置文件中
+global absZero;
+disp('Function: saveABSZeroToConfigFile()');
+disp(newline);
+
+file = fopen('si.config','w');
+str = 'absZero';
+fprintf(file,"%s\n",str);
+for i = 1:9
+    fprintf(file,"%d %d %d\n",absZero(i,:));
+end
+fclose(file);
+
+function loadABSZeroFromConfigFile()
+% 从设置文件中读取绝对原点坐标
+global absZero axisLimits;
+disp('Function: loadABSZeroFromConfigFile()');
+disp(newline);
+
+file = fopen('si.config','r');
+temp = fgetl(file);     %第一行为数据名
+if strcmp(temp, 'absZero')
+    for i = 1:9
+        temp = fgetl(file);
+        b = sscanf(temp,"%d %d %d");     %第二行开始为数据内容
+        absZero(i,:) = b';
+        updateAxisLimits(i,absZero(i,:));     %更新各轴控件位置上下限
+    end
+    disp(['绝对原点坐标读取成功！',newline]);
+end
+absZero
+axisLimits
+fclose(file);
+
+
+function updateAxisLimits(index,newZero)
+% 更新坐标轴极限
+% index 控件索引
+% newZero 新相对原点坐标
+global axisLimits;
+newZero
+axisLimits(index,1) = axisLimits(index,1) - newZero(1);
+axisLimits(index,2) = axisLimits(index,2) - newZero(1);
+axisLimits(index,3) = axisLimits(index,3) - newZero(2);
+axisLimits(index,4) = axisLimits(index,4) - newZero(2);
+axisLimits(index,5) = axisLimits(index,5) - newZero(3);
+axisLimits(index,6) = axisLimits(index,6) - newZero(3);
+
+
 function flag = comPortOn(index, handles)
 % 打开串口
 % index 串口索引
 % strCOM 串口名
 global comList scoms;
+disp('Function: comPortOn()');
+disp(newline);
 baud_rate = 38400;    %波特率 38400
 jiaoyan = 'none';     %校验位 无
 data_bits = 8;         %数据位 8位
@@ -121,47 +180,13 @@ stopasync(scoms); %停止异步读写操作
 fclose(scoms);
 delete(scoms);
 
-%{
-function comPortOnOrOff(strCOM, flag, handles)
-% 打开或关闭串口
-% strCOM 串口名
-% flag 0 关闭；1 打开
-if flag == 1
-    baud_rate = 38400;    %波特率 38400
-    jiaoyan = 'none';     %校验位 无
-    data_bits = 8;         %数据位 8位
-    stop_bits = 1;         %终止位 1位
-    scom0 = serial(strCOM);    %创建串口对象, 'timerfcn', {@dataDisp, handles}
-    % 配置串口属性，指定其回调函数
-    set(scom0, 'BaudRate', baud_rate, 'Parity', jiaoyan, 'DataBits',...
-        data_bits, 'StopBits', stop_bits, 'BytesAvailableFcnCount', 10,...
-        'BytesAvailableFcnMode', 'byte', 'BytesAvailableFcn', {@bytes, handles},...
-        'TimerPeriod', 0.05, 'timerfcn', {@getMessageFromComPort, handles});
-    %BytesAvailableFcnMode 设置中断响应模式（有“byte”和“Terminator”两种模式可选，“byte”是达到一定字节数产生中断，“Terminator”可用作键盘某个按键事件来产生中断）
-    % 将串口对象的句柄作为用户数据，存入窗口对象
-    set(handles.figure1, 'UserData', scom0);
-    % 尝试打开串口
-    try
-        fopen(scom0);  %打开串口
-    catch   % 若串口打开失败，提示“串口不可获得！”
-        msgbox('串口不可获得！','Error','error');
-        %set(hObject, 'value', 0);  %弹起本按钮 
-        return;
-    end
-    
-else %关闭串口
-    % 停止并删除串口对象
-    scoms = instrfind; %将所有有效的串行端口对象以 out 数组形式返回
-    stopasync(scoms); %停止异步读写操作
-    fclose(scoms);
-    delete(scoms);
-end
-%}
-
 function sendCommand(index, strCMD, handles)
 % 向特定串口发送命令
 % index 控件串口索引
 % strCMD 发送命令内容
+disp('Function: sendCommand()');
+disp(newline);
+
 vv =10;
 dd =13;
 global scoms;
@@ -172,7 +197,7 @@ val = strCMD;
 numSend = numSend + length(val);
 set(handles.trans, 'string', num2str(numSend));
 setappdata(handles.figure1, 'numSend', numSend);
-EnterSend_flag = 1;
+EnterSend_flag = 1;     %DIC显微镜协议中末尾必须增加回车字符
 I_flag=0;
 if ~isempty(val)
     %% 设置倒计数的初值
@@ -200,39 +225,42 @@ end
 
 function getMessageFromComPort(obj, event, handles)
 % 从串口获取数据
-%% 获取参数
+% 获取参数
 global ifreceived;
 hasData = getappdata(handles.figure1, 'hasData'); %串口是否收到数据
 strRec = getappdata(handles.figure1, 'strRec');   %串口数据的字符串形式，定时显示该数据
 numRec = getappdata(handles.figure1, 'numRec');   %串口接收到的数据个数
-%% 若串口没有接收到数据，先尝试接收串口数据
-if ~hasData
-    bytes(obj, event, handles);
-end
-%% 若串口有数据，返回串口数据
-if hasData
-    %% 给数据显示模块加互斥锁
-    %% 在执行显示数据模块时，不接受串口数据，即不执行BytesAvailableFcn回调函数
-    setappdata(handles.figure1, 'isShow', true); 
-    %% 若要显示的字符串长度超过10000，清空显示区
-    if length(strRec) > 10000
-        strRec = '';
-        setappdata(handles.figure1, 'strRec', strRec);
+
+    % 若串口没有接收到数据，先尝试接收串口数据
+    if ~hasData || ifreceived == 0
+        bytes(obj, event, handles);
     end
-    %% 显示数据
-    set(handles.xianshi, 'string', strRec);
-    %% 更新接收计数
-    set(handles.rec,'string', numRec);
-    %% 更新hasData标志，表明串口数据已经显示
-    setappdata(handles.figure1, 'hasData', false);
-    %% 给数据显示模块解锁
-    setappdata(handles.figure1, 'isShow', false);
-    ifreceived = 1;
-    %Msg = strRec;    %获取接收到的消息
-    %清空接收区
-    %strRec = '';
-    %setappdata(handles.figure1, 'strRec', strRec);
-end
+    % 若串口有数据，返回串口数据
+    if hasData && (strRec(length(strRec)) == char(13))
+        % 给数据显示模块加互斥锁
+        % 在执行显示数据模块时，不接受串口数据，即不执行BytesAvailableFcn回调函数
+        setappdata(handles.figure1, 'isShow', true); 
+        % 若要显示的字符串长度超过10000，清空显示区
+        if length(strRec) > 10000
+            strRec = '';
+            setappdata(handles.figure1, 'strRec', strRec);
+        end
+        % 显示数据
+        set(handles.xianshi, 'string', strRec);
+        % 更新接收计数
+        set(handles.rec,'string', numRec);
+        % 更新hasData标志，表明串口数据已经显示
+        setappdata(handles.figure1, 'hasData', false);
+        % 给数据显示模块解锁
+        setappdata(handles.figure1, 'isShow', false);
+        
+        ifreceived = 1;
+        %Msg = strRec;    %获取接收到的消息
+        %清空接收区
+        %strRec = '';
+        %setappdata(handles.figure1, 'strRec', strRec);
+    end
+
 
 function response = sendAndGetResponse(index, strCMD, handles)
 % 发送一条命令并接受一条返回消息 调用前需先打开相应串口
@@ -240,52 +268,38 @@ function response = sendAndGetResponse(index, strCMD, handles)
 % strCMD 操作指令
 % handles gui句柄
 global ifreceived;
+disp('Function: sendAndGetResponse()');
+disp(newline);
+
 response = '';
-%comPortOnOrOff(strCOM, 1, handles);    % 打开串口
 sendCommand(index, strCMD, handles);    %P 获取当前位置
 %等待接收数据
+tic
 while (1)
+
     if (ifreceived == 1)
         response = getappdata(handles.figure1, 'strRec');    %获取串口消息
         ifreceived = 0;
         setappdata(handles.figure1, 'strRec', '');
         break;
+    elseif (toc > 2)
+        % 超过2秒认为获取失败，则返回空字符串
+        break;
     end
 end
+response
 length(response)
 %消息解码，分存
 %comPortOnOrOff(strCOM, 0, handles);    % 关闭串口
 
-%{
-function commandPDecodeByIndex(index, strPosition)
-% 根据索引按照特定格式更新单个被控单元的位置，格式为：x y z
-% index 被控元件编号
-% strPosition 位置字符串
-% strPositionFormate 位置坐标格式
-global prePosition newPosition;
-%判断最后一个字符是否为换行符
-if (strPosition(length(strPosition))) == newline
-    strPosition = strPosition(1:(length(strPosition)-1));
-end
-%字符串分割
-strNums = split(strPosition,' ');
-if (length(strNums) ~= 3)
-    disp(['输入数据格式不匹配！',newline]);
-    return;
-end
-prePosition(index, 1) = str2num(strNums{1});
-prePosition(index, 2) = str2num(strNums{2});
-prePosition(index, 3) = str2num(strNums{3});
-newPosition(index, 1) = str2num(strNums{1});
-newPosition(index, 2) = str2num(strNums{2});
-newPosition(index, 3) = str2num(strNums{3});
-%}
-
-function getCurrentPosition(index, handles)
+function strNums = getCurrentPosition(index, handles)
 % 获取控件当前位置
 % index 控件索引
 % handles gui全局句柄
-global prePosition newPosition elementAvailable;
+global elementAvailable;
+disp('Function: getCurrentPosition()');
+disp(newline);
+
 if (index < 1 || index > 9)
     disp(['输入索引错误！',newline]);
     return;
@@ -293,44 +307,70 @@ end
 if (elementAvailable(index) == 1)
     %com = scoms{index};
     msg = sendAndGetResponse(index, 'P', handles);
-    
-    %判断最后一个字符是否为换行符
-    if (msg(length(msg))) == char(13)
-        msg = msg(1:(length(msg)-2));
+    msg = removeEndEnterChar(msg);		% 移除字符串末尾的回车
+    if isempty(msg)
+        disp(['串口返回异常',newline]);
+        return;
     end
     %字符串分割
     strNums = split(msg,char(9));
     if (length(strNums) ~= 3)
         disp(['返回数据格式不匹配！',newline]);
-        
+        strNums
         return;
     end
-    prePosition(index, 1) = str2num(strNums{1});
-    prePosition(index, 2) = str2num(strNums{2});
-    prePosition(index, 3) = str2num(strNums{3});
-    newPosition(index, 1) = str2num(strNums{1});
-    newPosition(index, 2) = str2num(strNums{2});
-    newPosition(index, 3) = str2num(strNums{3});
 end
+
+function setNewPosition(index,strNums)
+% 按照数组数据更新坐标
+global prePosition newPosition;
+disp(['Function: setNewPosition()',newline]);
+strNums
+prePosition(index, 1) = str2num(strNums{1});
+prePosition(index, 2) = str2num(strNums{2});
+prePosition(index, 3) = str2num(strNums{3});
+newPosition(index, 1) = str2num(strNums{1});
+newPosition(index, 2) = str2num(strNums{2});
+newPosition(index, 3) = str2num(strNums{3});
 
 function commandZEROReaction(handles)
 % 将当前位置设为原点（0,0,0）
-global numSwitch prePosition newPosition;
-%com = scoms{numSwitch};
+global numSwitch prePosition newPosition absZero;
+disp('Function: commandZEROReaction()');
+
+%goto操作
+%判断当前位置是否为显示框中位置
+pDisplay = zeros(1,3);
+pDisplay(1) = str2num(get(handles.xPosition_edit,'String'))*100;
+pDisplay(2) = str2num(get(handles.yPosition_edit,'String'))*100;
+pDisplay(3) = str2num(get(handles.zPosition_edit,'String'))*100;
+if pDisplay ~= prePosition(numSwitch,:)
+    %当前控件移动
+    goTo(numSwitch,pDisplay,handles);
+end
+
+absZero(numSwitch,:) = absZero(numSwitch,:) + newPosition(numSwitch,:);     %更新绝对原点坐标
+saveABSZeroToConfigFile();
+updateAxisLimits(numSwitch,newPosition(numSwitch,:));     %更新坐标极限
 msg = sendAndGetResponse(numSwitch, 'ZERO', handles);
+% absZero
+% axisLimits axisLimits
 
 %判断最后一个字符是否为换行符
 if (msg(length(msg))) == char(13)
     msg = msg(1:(length(msg)-1));
 end
-
+if isempty(msg)
+	disp(['串口返回异常',newline]);
+	return;
+end
 switch(msg)
     case 'E'
         disp(['设置失败！',newline]);
     case 'A'
         disp(['设置成功！',newline]);
-        prePosition(numSwith,:) = [0,0,0];
-        newPosition(numSwith,:) = [0,0,0];
+        prePosition(numSwitch,:) = [0,0,0];
+        newPosition(numSwitch,:) = [0,0,0];
         refreshGuiPosition(handles);
     otherwise
         disp(['返回异常！',newline]);
@@ -340,33 +380,40 @@ end
 function refreshGuiPosition(handles)
 % 刷新当前显示的坐标
 global numSwitch newPosition;
-set(handles.xPosition_edit, 'string', newPosition(numSwitch,1));
-set(handles.yPosition_edit, 'string', newPosition(numSwitch,2));
-set(handles.zPosition_edit, 'string', newPosition(numSwitch,3));
+set(handles.xPosition_edit, 'string', newPosition(numSwitch,1)/100);
+set(handles.yPosition_edit, 'string', newPosition(numSwitch,2)/100);
+set(handles.zPosition_edit, 'string', newPosition(numSwitch,3)/100);
 
 function commandMoveReaction(index, cmdType, x, y, z, handles)
 % 移动到输入的坐标位置
 % index 控件索引
-% cmdType 移动方式：ABS 绝对坐标移动；REL 相对坐标移动
-% x y z 坐标
+% cmdType 移动方式：ABS 绝对坐标移动；REL 相对坐标移动目标坐标输入；RELD 相对坐标移动相对位移量输入
+% x y z 坐标或相对坐标
 global prePosition newPosition elementAvailable;
-
-if strcmp(cmdType,'ABS') && strcmp(cmdType,'REL')
-    disp(['移动方式输入错误！',newline]);
-    return;
-end
-% 生成命令串
-if strcmp(cmdType,'ABS')
-    cmd = ['ABS ',num2str(x),' ',num2str(y),' ',num2str(z)];
-else
-    cmd = ['REL ',num2str(x - newPosition(index,1)),' ',num2str(y - newPosition(index,2)),' ',num2str(z - newPosition(index,3))];
-end
 
 %判断索引是否合法
 if (index < 1 || index > 9)
     disp(['输入索引错误！',newline]);
     return;
 end
+%判断移动方式是否合法
+if strcmp(cmdType,'ABS') && strcmp(cmdType,'REL') && strcmp(cmdType,'RELD')
+    disp(['移动方式输入错误！',newline]);
+    return;
+end
+% 生成命令串
+switch(cmdType)
+    case 'ABS'
+        cmd = ['ABS ',num2str(x),' ',num2str(y),' ',num2str(z)];
+    case 'REL'
+        cmd = ['REL ',num2str(x - prePosition(index,1)),' ',num2str(y - prePosition(index,2)),' ',num2str(z - prePosition(index,3))];
+    case 'RELD'
+        cmd = ['REL ',num2str(x),' ',num2str(y),' ',num2str(z)];
+        x = x + prePosition(index,1);
+        y = y + prePosition(index,2);
+        z = z + prePosition(index,3);
+end
+% 若串口可用则发送指令
 if (elementAvailable(index) == 1)
     %com = scoms{index};
     msg = sendAndGetResponse(index, cmd, handles);
@@ -375,107 +422,157 @@ if (elementAvailable(index) == 1)
     if (msg(length(msg))) == char(13)
         msg = msg(1:(length(msg)-1));
     end
-    
+    if isempty(msg)
+        disp(['串口返回异常',newline]);
+        return;
+    end
 
     switch(msg)
         case 'E'
             disp(['设置失败！',newline]);
+            msg
         case 'A'
             disp(['设置成功！',newline]);
+            %更新坐标存储
             prePosition(index,:) = [x,y,z];
             newPosition(index,:) = [x,y,z];
         otherwise
             disp(['返回异常！',newline]);
             msg
     end
+else
+    disp(['目标串口不可用！',newline]);
 end
 
-function goTo(index,handles)
-% goto按钮功能实现
+function newNum = xCheckLimit(index,num,handles)
+% x坐标极限检测
 % index 控件索引
-x = str2num(get(handles.xPosition_edit, 'string'));
-y = str2num(get(handles.yPosition_edit, 'string'));
-z = str2num(get(handles.zPosition_edit, 'string'));
+% num 输入坐标
+% handles gui全局句柄
+global numSwitch axisLimits;
+if num < axisLimits(index,1)
+    num = axisLimits(index,1);     %限制移动
+    if index == numSwitch
+        set(handles.xPosition_edit,'string',num/100);     %更新显示坐标
+        limitsGuiReaction(1,handles.xMinus_pushbutton,handles.xPlus_pushbutton);     %更新gui控件标识
+    end
+elseif num > axisLimits(index,2)
+    num = axisLimits(index,2);     %限制移动
+    if index == numSwitch
+        set(handles.xPosition_edit,'string',num/100);     %更新显示坐标
+        limitsGuiReaction(2,handles.xMinus_pushbutton,handles.xPlus_pushbutton);     %更新gui控件标识
+    end
+else
+    if index == numSwitch
+        limitsGuiReaction(0,handles.xMinus_pushbutton,handles.xPlus_pushbutton);     %更新gui控件标识
+    end
+end
+newNum = num;
+
+function newNum = yCheckLimit(index,num,handles)
+% y坐标极限检测
+% index 控件索引
+% num 输入坐标
+% handles gui全局句柄
+global numSwitch axisLimits;
+if num < axisLimits(index,3)
+    num = axisLimits(index,3);     %限制移动
+    if index == numSwitch
+        set(handles.yPosition_edit,'string',num/100);     %更新显示坐标
+        limitsGuiReaction(1,handles.yMinus_pushbutton,handles.yPlus_pushbutton);     %更新gui控件标识
+    end
+elseif num > axisLimits(index,4)
+    num = axisLimits(index,4);     %限制移动
+    if index == numSwitch
+        set(handles.yPosition_edit,'string',num/100);     %更新显示坐标
+        limitsGuiReaction(2,handles.yMinus_pushbutton,handles.yPlus_pushbutton);     %更新gui控件标识
+    end
+else
+    if index == numSwitch
+        limitsGuiReaction(0,handles.yMinus_pushbutton,handles.yPlus_pushbutton);     %更新gui控件标识
+    end
+end
+newNum = num;
+
+function newNum = zCheckLimit(index,num,handles)
+% z坐标极限检测
+% index 控件索引
+% num 输入坐标
+% handles gui全局句柄
+global numSwitch axisLimits;
+if num < axisLimits(index,5)
+    num = axisLimits(index,5);     %限制移动
+    if index == numSwitch
+        set(handles.zPosition_edit,'string',num/100);     %更新显示坐标
+        limitsGuiReaction(1,handles.zMinus_pushbutton,handles.zPlus_pushbutton);     %更新gui控件标识
+    end
+elseif num > axisLimits(index,6)
+    num = axisLimits(index,6);     %限制移动
+    if index == numSwitch
+        set(handles.zPosition_edit,'string',num/100);     %更新显示坐标
+        limitsGuiReaction(2,handles.zMinus_pushbutton,handles.zPlus_pushbutton);     %更新gui控件标识
+    end
+else
+    if index == numSwitch
+        limitsGuiReaction(0,handles.zMinus_pushbutton,handles.zPlus_pushbutton);     %更新gui控件标识
+    end
+end
+newNum = num;
+
+function goTo(index,newP,handles)
+% goto按钮功能实现，先判断是否可以移动，再进行移动，若超范围则移动到极限位置
+% index 控件索引
+% newP 待移动位置坐标 x y z
+% global axisLimits;
+x = newP(1);
+x = xCheckLimit(index,x,handles);
+% if x < axisLimits(index,1)
+%     x = axisLimits(index,1);     %限制移动
+%     set(handles.xPosition_edit,'string',x);     %更新显示坐标
+%     limitsGuiReaction(1,handles.xMinus_pushbutton,handles.xPlus_pushbutton);     %更新gui控件标识
+% elseif x > axisLimits(index,2)
+%     x = axisLimits(index,2);     %限制移动
+%     set(handles.xPosition_edit,'string',x);     %更新显示坐标
+%     limitsGuiReaction(2,handles.xMinus_pushbutton,handles.xPlus_pushbutton);     %更新gui控件标识
+% else
+%     limitsGuiReaction(0,handles.xMinus_pushbutton,handles.xPlus_pushbutton);     %更新gui控件标识
+% end
+y = newP(2);
+y = yCheckLimit(index,y,handles);
+% if y < axisLimits(index,3)
+%     y = axisLimits(index,3);     %限制移动
+%     set(handles.yPosition_edit,'string',y);     %更新显示坐标
+%     limitsGuiReaction(1,handles.yMinus_pushbutton,handles.yPlus_pushbutton);     %更新gui控件标识
+% elseif y > axisLimits(index,4)
+%     y = axisLimits(index,4);     %限制移动
+%     set(handles.yPosition_edit,'string',y);     %更新显示坐标
+%     limitsGuiReaction(2,handles.yMinus_pushbutton,handles.yPlus_pushbutton);     %更新gui控件标识
+% else
+%     limitsGuiReaction(0,handles.yMinus_pushbutton,handles.yPlus_pushbutton);     %更新gui控件标识
+% end
+z = newP(3);
+z = zCheckLimit(index,z,handles);
+% if z < axisLimits(index,5)
+%     z = axisLimits(index,5);     %限制移动
+%     set(handles.zPosition_edit,'string',z);     %更新显示坐标
+%     limitsGuiReaction(1,handles.zMinus_pushbutton,handles.zPlus_pushbutton);     %更新gui控件标识
+% elseif z > axisLimits(index,6)
+%     z = axisLimits(index,6);     %限制移动
+%     set(handles.zPosition_edit,'string',z);     %更新显示坐标
+%     limitsGuiReaction(2,handles.zMinus_pushbutton,handles.zPlus_pushbutton);     %更新gui控件标识
+% else
+%     limitsGuiReaction(0,handles.zMinus_pushbutton,handles.zPlus_pushbutton);     %更新gui控件标识
+% end
 %commandMoveReaction(index, 'ABS', x, y, z, handles);     %绝对移动
 commandMoveReaction(index, 'REL', x, y, z, handles);     %相对移动
-
-%{
-function commandABSReaction(index, x, y, z)
-% 绝对坐标移动，移动到输入的坐标位置
-% index 控件索引
-% x y z 坐标
-global prePosition newPosition elementAvailable scoms;
-% 生成命令串
-cmd = ['ABS ',num2str(x),' ',num2str(y),' ',num2str(z)];
-%判断索引是否合法
-if (index < 1 || index > 9)
-    disp('输入索引错误！/n');
-    return;
-end
-if (elementAvailable(index) == 1)
-    com = scoms{index};
-    msg = sendAndGetResponse(com, cmd, handles);
-    
-    %判断最后一个字符是否为换行符
-    if (msg(length(msg))) == newline
-        msg = msg(1:(length(msg)-1));
-    end
-    
-    switch(msg)
-        case 'E'
-            disp('设置失败！/n');
-        case 'A'
-            disp('设置成功！/n');
-            prePosition(numSwith,:) = [x,y,z];
-            newPosition(numSwith,:) = [x,y,z];
-            refreshGuiPosition(handles);
-        otherwise
-            disp('返回异常/n');
-            msg
-    end
-end
-
-function commandRELReaction(index, x, y, z)
-% 相对坐标移动，移动到输入的坐标位置
-% index 控件索引
-% x y z 坐标
-global prePosition newPosition elementAvailable scoms;
-% 生成命令串
-cmd = ['REL ',num2str(x - newPosition(index,1)),' ',num2str(y - newPosition(index,2)),' ',num2str(z - newPosition(index,3))];
-%判断索引是否合法
-if (index < 1 || index > 9)
-    disp('输入索引错误！/n');
-    return;
-end
-if (elementAvailable(index) == 1)
-    com = scoms{index};
-    msg = sendAndGetResponse(com, cmd, handles);
-    
-    %判断最后一个字符是否为换行符
-    if (msg(length(msg))) == newline
-        msg = msg(1:(length(msg)-1));
-    end
-    
-    switch(msg)
-        case 'E'
-            disp('设置失败！/n');
-        case 'A'
-            disp('设置成功！/n');
-            prePosition(numSwith,:) = [x,y,z];
-            newPosition(numSwith,:) = [x,y,z];
-            refreshGuiPosition(handles);
-        otherwise
-            disp('返回异常/n');
-            msg
-    end
-end
-%}
 
 function msg = removeEndEnterChar(str)
 % 移除字符串末尾的回车
 %判断最后一个字符是否为换行符
 if (str(length(str))) == char(13)
 	msg = str(1:(length(str)-1));
+else
+    msg = str;
 end
 
 function commandSTOPReaction(handles)
@@ -485,20 +582,23 @@ flag = [];
 i = numSwitch;
 %for i = 1:9
     if elementAvailable(i) == 1
-        %com = scoms{i};
         msg = sendAndGetResponse(i, 'STOP', handles);
         
         %判断最后一个字符是否为换行符
         if (msg(length(msg))) == char(13)
             msg = msg(1:(length(msg)-1));
         end
-        
+        if isempty(msg)
+            disp(['串口返回异常',newline]);
+            return;
+        end
         if (msg ~= 'A')
             flag(i) = 0;
             disp(['停止失败！',newline])
         else
             flag(i) = 1;
-            getCurrentPosition(i, handles);     %获取新位置
+            pXYZ = getCurrentPosition(i, handles);     %获取新位置
+            setNewPosition(i,pXYZ);     %更新全局变量
         end
     end
 %end
@@ -508,10 +608,225 @@ if (flag(i) == 1)
     refreshGuiPosition(handles);
 end
 
+function getLimitsOfAxis(index, handles)
+% 获取控件轴向移动是否到达位移极限
+% index 控件索引
+% handles gui全局句柄
+global scoms;
+com = scoms{index};
+if elementAvailable(index) == 1
+	msg = sendAndGetResponse(index, 'LIMITS', handles);
+    
+    %判断最后一个字符是否为换行符
+    if (msg(length(msg))) == char(13)
+        msg = msg(1:(length(msg)-1));
+    end
+    if isempty(msg)
+        disp(['串口返回异常',newline]);
+        return;
+    end
+
+    num = str2num(msg);
+    %验证数据是否有效
+    if isempty(num) || num < 0 || num > 63
+        disp(['返回数据错误！',newline]);
+        num
+        return;
+    end
+    %数字解析
+    xlimit = bitand(binNum,3);
+    ylimit = bitshift(xlimitbitand(binNum,12),-2);
+    zlimit = bitshift(xlimitbitand(binNum,48),-4);
+    %gui响应
+    limitsGuiReaction(xlimit,handles.xMinus_pushbutton,handles.xPlus_pushbutton);
+    limitsGuiReaction(ylimit,handles.yMinus_pushbutton,handles.yPlus_pushbutton);
+    limitsGuiReaction(zlimit,handles.zMinus_pushbutton,handles.zPlus_pushbutton);
+    
+    
+end
+
+function limitsGuiReaction(limitResponse, hObjectLow, hObjectHeight)
+% 对应高低限制显示控件响应
+% limitResponse 控件移动极限标识数据 0 无；1 低极限；2 高极限；3 高低都极限
+% hObjectLow 低极限显示控件句柄
+% hObjectHeight 低极限显示控件句柄
+switch (limitResponse)
+    case 0
+        if get(hObjectLow,'Value') == 1
+            set(hObjectLow,'Value',0);
+            set(hObjectLow,'BackgroundColor',[0.9,0.9,0.9]);
+        end
+        if get(hObjectHeight,'Value') == 1
+            set(hObjectHeight,'Value',0);
+            set(hObjectHeight,'BackgroundColor',[0.9,0.9,0.9]);
+        end
+    case 1
+        if get(hObjectLow,'Value') == 0
+            set(hObjectLow,'Value',1);
+            set(hObjectLow,'BackgroundColor',[1,0,0]);
+        end
+        if get(hObjectHeight,'Value') == 1
+            set(hObjectHeight,'Value',0);
+            set(hObjectHeight,'BackgroundColor',[0.9,0.9,0.9]);
+        end
+    case 2
+        if get(hObjectLow,'Value') == 1
+            set(hObjectLow,'Value',0);
+            set(hObjectLow,'BackgroundColor',[0.9,0.9,0.9]);
+        end
+        if get(hObjectHeight,'Value') == 0
+            set(hObjectHeight,'Value',1);
+            set(hObjectHeight,'BackgroundColor',[1,0,0]);
+        end
+    case 3
+        if get(hObjectLow,'Value') == 0
+            set(hObjectLow,'Value',1);
+            set(hObjectLow,'BackgroundColor',[1,0,0]);
+        end
+        if get(hObjectHeight,'Value') == 0
+            set(hObjectHeight,'Value',1);
+            set(hObjectHeight,'BackgroundColor',[1,0,0]);
+        end
+    otherwise
+        disp(['输入标志位数据错误',newline]);
+        return;
+end
+
+function isMoving = checkIsMoving(index,handles)
+% 检测当前控件是否移动 移动则返回1；停止则返回0;异常返回-1
+% handles gui全局句柄
+
+%{
+%自己编写的,只会更新prePosition
+global prePosition;
+currentPosition = getCurrentPosition(index,handles);
+if (prePosition(index,1) ~= currentPosition(1) || prePosition(index,2) ~= currentPosition(2) || prePosition(index,3) ~= currentPosition(3))
+    prePosition(index,1) = currentPosition(1);
+    prePosition(index,1) = currentPosition(1);
+    prePosition(index,1) = currentPosition(1);
+    isMoving = 1;
+else
+    isMoving = 0;
+end
+%}
+%新版指令
+msg = sendAndGetResponse(index, 'S', handles);     %获取运动状态
+msg = removeEndEnterChar(msg);		% 移除字符串末尾的回车
+if isempty(msg)
+	disp(['串口返回异常',newline]);
+	return;
+end
+switch (msg)
+    case '0'
+        isMoving = 0;
+    case '1'
+        isMoving = 1;
+    otherwise
+        disp(['返回数据异常',newline]);
+        msg
+        isMoving = -1;
+end
+
+
+function obj = getObjective(handles)
+% 获取物镜倍率 0 获取失败；1 低倍镜；2 高倍镜（待定）
+% handles gui全局句柄
+msg = sendAndGetResponse(1, 'OBJ', handles);
+msg = removeEndEnterChar(msg);     %删除字符串末的换行符
+if isempty(msg)
+	disp(['串口返回异常',newline]);
+	return;
+end
+num = str2num(msg);
+if num == 1 || num == 2
+    obj = num;
+else
+    obj = 0;
+end
+
+function setObjective(objnum,handles)
+% 切换物镜
+% objnum 1 低倍镜；2 高倍镜（暂定）
+% handles gui全局句柄
+switch(objnum)
+    case 1
+        'OBJ 1'
+        msg = sendAndGetResponse(1, 'OBJ 1', handles);
+    case 2
+        'OBJ 2'
+        msg = sendAndGetResponse(1, 'OBJ 2', handles);
+    otherwise
+        disp(['输入参数错误',newline]);
+        objnum
+        return;
+end
+msg = removeEndEnterChar(msg);		% 移除字符串末尾的回车
+if isempty(msg)
+	disp(['串口返回异常',newline]);
+	return;
+end
+if msg == 'A'
+    disp(['物镜切换成功',newline]);
+    if strcmp(get(handles.objswitch_pushbutton,'String'),'×4')
+        set(handles.objswitch_pushbutton,'String','×40');
+    else
+        set(handles.objswitch_pushbutton,'String','×4');
+    end
+else
+    disp(['物镜切换失败',newline]);
+end
+
+function dP = comoveOfInjection(index,detaP)
+% Using Microscope movement to compute injection movement
+% index: injection index
+% detaP: microscope position change
+disp(['Function: comoveOfInjection',newline]);
+
+theta = angleOffset(index)/180*pi;
+dP = zeros(1,3);     %store position change
+dP(1) = detaP(1)*cos(theta) + detaP(2)*sin(theta);
+dP(2) = -detaP(1)*sin(theta) + detaP(2)*cos(theta);
+dP(3) = detaP(3);
+%to check whether the injection could go to this position
+tempP(1) = prePosition(index,1)+dP(1) - xCheckLimit(index,prePosition(index,1)+dP(1),handles);
+tempP(2) = prePosition(index,2)+dP(2) - yCheckLimit(index,prePosition(index,2)+dP(2),handles);
+tempP(3) = prePosition(index,3)+dP(3) - zCheckLimit(index,prePosition(index,3)+dP(3),handles);
+if tempP(1) ~= 0 || tempP(2) ~= 0 || tempP(3) ~= 0
+	str = ['The injection can not go to this position.',newline];
+	disp(str);
+	return;
+end
+            
+%do co-move
+commandMoveReaction(index, 'RELD', dP(1), dP(2), dP(3), handles);     %injection move
+
+function mPosition = transformImagePositionToMicroscopePosition()
+% transform the image position stored in global parameter (loc) to microscope position
+global loc prePosition;
+if (loc(1) == 0 && loc(2) == 0)
+    disp(['Get the position first.',newline]);
+    return;
+end
+mPosition = zeros(1,2);
+mPosition(1) = prePosition(1,1) + round((loc(1,2)-512)*50/3);
+mPosition(2) = prePosition(1,2) - round((loc(1,1)-688)*50/3);
+
+function descStr = getElementDescStr(com,handles)
+% get element description from USB comport
+% com: comport object
+% handles: GUI global handle
+descStr = sendAndGetResponse(com, 'DESC', handles);
+descStr = removeEndEnterChar(descStr);		% delete the ending enter char 
+if isempty(descStr)
+	disp(['串口返回异常',newline]);
+	return;
+end
 
 function positionInitiate(handles)
 % 从各可控元件获取初始位置
 global comList elementAvailable;
+loadABSZeroFromConfigFile();
+comPortOff();
 availableCom = getAvailableComPort;     %获取有效串口列表
 %验证目标串口是否可用
 for i = 1:size(comList, 1)
@@ -523,9 +838,6 @@ for i = 1:size(comList, 1)
 end
 setButtonEnableOfElement(elementAvailable,handles);     %设置按钮可用
 
-
-%msg = sendAndGetResponse(1, 'P', handles);     %获取控件位置
-%comPortOff();
 %打开所有串口
 for i = 1:9
     if elementAvailable(i) == 1
@@ -533,12 +845,11 @@ for i = 1:9
         if flag == 0
             elementAvailable(i) = 0;
         else
-            getCurrentPosition(i, handles);     %获取控件位置
+            pXYZ = getCurrentPosition(i, handles);     %获取控件位置
+            setNewPosition(i,pXYZ);     %更新全局变量
         end
     end
 end
-
-
 
 refreshGuiPosition(handles);     %刷新显示
 %{
@@ -550,6 +861,38 @@ for i = 1:9
     end
 end
 %}
+%控件描述字符串获取
+if elementAvailable(4) == 1
+    msg = sendAndGetResponse(4, 'DESC', handles);
+    msg = removeEndEnterChar(msg);		% 移除字符串末尾的回车
+    if isempty(msg)
+        disp(['串口返回异常',newline]);
+        return;
+    end
+    msg1 = sendAndGetResponse(4, 'ANGLE', handles);
+    msg1 = removeEndEnterChar(msg1);      % 移除字符串末尾的回车
+    if isempty(msg1)
+        disp(['串口返回异常',newline]);
+        return;
+    end
+end
+%物镜切换功能初始化
+if elementAvailable(1) == 1
+    % 显微镜物镜切换按钮初始化
+    disp(['初始化显微镜物镜按钮',newline]);
+    obj = getObjective(handles);
+    switch(obj)
+        case 0
+            disp(['物镜初始化失败',newline]);
+            set(handles.objswitch_pushbutton,'Enable', 'off');
+        case 1
+            set(handles.objswitch_pushbutton,'String', '×40');
+        case 2
+            set(handles.objswitch_pushbutton,'String', '×4');
+    end
+else
+    set(handles.objswitch_pushbutton,'Enable','off');
+end
 
 
 
@@ -558,66 +901,66 @@ function setButtonEnableOfElement(a,handles)
 % a 标识数组
 % 0 off; 1 on
 if a(1) == 0
-    set(handles.microscope_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.microscope_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.microscope_pushbutton,'Enable', 'off');
 else
-    set(handles.microscope_pushbutton, 'ForegroundColor', 'black');
+%     set(handles.microscope_pushbutton, 'ForegroundColor', 'black');
     set(handles.microscope_pushbutton,'Enable', 'on');
 end
 if a(2) == 0
-    set(handles.injection1_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection1_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection1_pushbutton,'Enable', 'off');
 else
-    set(handles.injection1_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection1_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection1_pushbutton,'Enable', 'on');
 end
 if a(3) == 0
-    set(handles.injection2_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection2_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection2_pushbutton,'Enable', 'off');
 else
-    set(handles.injection2_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection2_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection2_pushbutton,'Enable', 'on');
 end
 if a(4) == 0
-    set(handles.injection3_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection3_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection3_pushbutton,'Enable', 'off');
 else
-    set(handles.injection3_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection3_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection3_pushbutton,'Enable', 'on');
 end
 if a(5) == 0
-    set(handles.injection4_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection4_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection4_pushbutton,'Enable', 'off');
 else
-    set(handles.injection4_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection4_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection4_pushbutton, 'Enable', 'on');
 end
 if a(6) == 0
-    set(handles.injection5_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection5_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection5_pushbutton,'Enable', 'off');
 else
-    set(handles.injection5_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection5_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection5_pushbutton,'Enable', 'on');
 end
 if a(7) == 0
-    set(handles.injection6_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection6_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection6_pushbutton,'Enable', 'off');
 else
-    set(handles.injection6_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection6_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection6_pushbutton,'Enable', 'on');
 end
 if a(8) == 0
-    set(handles.injection7_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection7_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection7_pushbutton,'Enable', 'off');
 else
-    set(handles.injection7_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection7_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection7_pushbutton,'Enable', 'on');
 end
 if a(9) == 0
-    set(handles.injection8_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
+%     set(handles.injection8_pushbutton, 'ForegroundColor', [0.9,0.9,0.9]);
     set(handles.injection8_pushbutton,'Enable', 'off');
 else
-    set(handles.injection8_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
+%     set(handles.injection8_pushbutton, 'ForegroundColor', [0.6,0.6,0.6]);
     set(handles.injection8_pushbutton,'Enable', 'on');
 end
 
@@ -678,25 +1021,28 @@ function buttonElementAction(a,handles)
 global numSwitch newPosition;
 if numSwitch ~= a
     %输入框空异常处理
-    %positionInitiate();
-    %str2num(get(handles.xPosition_edit,'string'))
     if isempty(str2num(get(handles.xPosition_edit,'string'))) || isempty(str2num(get(handles.yPosition_edit,'string'))) || isempty(str2num(get(handles.zPosition_edit,'string')))
         disp(['请输入数字！',newline])
         return;
     end  
     %保存上个控件位置
-    newPosition(numSwitch,1) = str2num(get(handles.xPosition_edit,'string'));
-    newPosition(numSwitch,2) = str2num(get(handles.yPosition_edit,'string'));
-    newPosition(numSwitch,3) = str2num(get(handles.zPosition_edit,'string'));
+    newPosition(numSwitch,1) = str2num(get(handles.xPosition_edit,'string'))*100;
+    newPosition(numSwitch,2) = str2num(get(handles.yPosition_edit,'string'))*100;
+    newPosition(numSwitch,3) = str2num(get(handles.zPosition_edit,'string'))*100;
     %更新按钮字体颜色
     flag = zeros(1,9);
     numSwitch = a;
     flag(numSwitch) = 1;
     setButtonColorOfElements(flag,handles);
     %更新位置数据
-    set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
-    set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
-    set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+    set(handles.xPosition_edit,'string',newPosition(numSwitch,1)/100);
+    set(handles.yPosition_edit,'string',newPosition(numSwitch,2)/100);
+    set(handles.zPosition_edit,'string',newPosition(numSwitch,3)/100);
+    if (numSwitch == 1)
+        set(handles.objswitch_pushbutton,'Visible',1);
+    else
+        set(handles.objswitch_pushbutton,'Visible',0);
+    end
 end
 
 function varargout = serial_communication_OutputFcn(hObject, eventdata, handles) 
@@ -1085,9 +1431,9 @@ if ~CameraOpenFlag
     set(handles.CameraButton, 'string',"关闭摄像头",'ForegroundColor',[1 0 0]);
     objects = imaqfind;
     delete(objects);
-    obj = videoinput('winvideo',1,'YUY2_640x480');
-%     obj = videoinput('pmimaq_2019b', 1, 'PM-Cam 1376x1024'); %开始读图像
-%     src = getselectedsource(vid);
+%     obj = videoinput('winvideo',1,'YUY2_640x480');
+    obj = videoinput('pmimaq_2019b', 1, 'PM-Cam 1376x1024'); %开始读图像
+    src = getselectedsource(obj);
     set(obj,'FramesPerTrigger',1);
     set(obj,'TriggerRepeat',Inf);
     set(obj,'FrameGrabInterval',1);
@@ -1096,6 +1442,7 @@ if ~CameraOpenFlag
     axes(handles.Image_display);
     hImage1 = imshow(zeros(usbVidRes1(2),usbVidRes1(1),nBands1));
     preview(obj,hImage1);
+    flushdata(obj);
     start(obj);
 %     imwrite(getdata(obj),'C:\Users\xue\Desktop\2.jpg');
     isCameraOpened = true;
@@ -1113,7 +1460,7 @@ else
     obj = [];
     tb = text;
     set(gcf,'WindowButtonMotionFcn',@callback);
-    set(gcf,'WindowButtonDownFcn', @ButtonDowncallback);
+    set(gcf,'WindowButtonDownFcn', {@ButtonDowncallback,handles});
 %     delete(gcf);
 end
 
@@ -1146,9 +1493,9 @@ function ButtonDowncallback(obj, event, handles)
      global isButtonDown;
      isButtonDown = true;
      loc = get(gca, 'CurrentPoint');
-     loc = loc(1,(1:2));
+     loc = loc(1,(1:2))
      set(tb, 'string', num2str(loc), 'position', loc); 
-     set(handles.PositionBox,'String',loc);
+%      set(handles.PositionBox,'String',loc);
 
 
 
@@ -1230,11 +1577,11 @@ function xMinus_pushbutton_Callback(hObject, eventdata, handles)
 global numSwitch newPosition;
 if get(hObject,'value')
     if get(handles.fine_checkbox,'value')
-        newPosition(numSwitch,1) = newPosition(numSwitch,1) - 0.01;
-        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
-    else
         newPosition(numSwitch,1) = newPosition(numSwitch,1) - 1;
-        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1)/100);
+    else
+        newPosition(numSwitch,1) = newPosition(numSwitch,1) - 100;
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1)/100);
     end
 end
 
@@ -1256,11 +1603,11 @@ global numSwitch newPosition;
 if get(hObject,'value')
     
     if get(handles.fine_checkbox,'value')
-        newPosition(numSwitch,1) = newPosition(numSwitch,1) + 0.01;
-        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
-    else
         newPosition(numSwitch,1) = newPosition(numSwitch,1) + 1;
-        set(handles.xPosition_edit,'string',newPosition(numSwitch,1));
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1)/100);
+    else
+        newPosition(numSwitch,1) = newPosition(numSwitch,1) + 100;
+        set(handles.xPosition_edit,'string',newPosition(numSwitch,1)/100);
     end
 end
 %{
@@ -1281,15 +1628,68 @@ function fine_checkbox_Callback(hObject, eventdata, handles)
 % Hint: get(hObject,'Value') returns toggle state of fine_checkbox
 
 
-% --- Executes on button press in sendCommond_pushbutton.
-function sendCommond_pushbutton_Callback(hObject, eventdata, handles)
-% hObject    handle to sendCommond_pushbutton (see GCBO)
+% --- Executes on button press in goTo_pushbutton.
+function goTo_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to goTo_pushbutton (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-global numSwitch;
+global numSwitch prePosition angleOffset;
 if get(hObject, 'value')
-    %positionInitiate(handles);
-    goTo(numSwitch,handles);
+    %判断当前位置是否为显示框中位置
+    pDisplay = zeros(1,3);
+    pDisplay(1) = str2num(get(handles.xPosition_edit,'String'))*100;
+    pDisplay(2) = str2num(get(handles.yPosition_edit,'String'))*100;
+    pDisplay(3) = str2num(get(handles.zPosition_edit,'String'))*100;
+%     numSwitch
+    prePosition(numSwitch,:)
+%     pDisplay
+    if pDisplay(1) ~= prePosition(numSwitch,1) || pDisplay(2) ~= prePosition(numSwitch,2) || pDisplay(3) ~= prePosition(numSwitch,3)
+        % 目前协同默认为显微镜与单个微操的协同，所以协同时numSwitch = 1
+        if numSwitch == 1 && get(handles.comove_checkbox,'value')
+            %显微镜判断是否可移动
+            tempP = zeros(1,3);
+            tempP(1) = xCheckLimit(1,pDisplay(1),handles);
+            tempP(2) = yCheckLimit(1,pDisplay(2),handles);
+            tempP(3) = zCheckLimit(1,pDisplay(3),handles);
+            if pDisplay(1) ~= tempP(1) || pDisplay(2) ~= tempP(2) || pDisplay(3) ~= tempP(3)
+                str = ['显微镜无法移动到该位置',newline];
+                disp(str);
+                return;
+            end
+            
+            %协同移动控件，测试时为3号微操
+            %根据显微镜移动，计算微操坐标
+            detaP = pDisplay - prePosition(1,:);     %显微镜位移变化
+            angleOffset(4)
+            
+            
+            theta = angleOffset(4)/180*pi;
+            dP = zeros(1,3);     %先存变化量
+            dP(1) = detaP(1)*cos(theta) + detaP(2)*sin(theta);
+            dP(2) = -detaP(1)*sin(theta) + detaP(2)*cos(theta);
+            dP(3) = detaP(3);
+            %微操判断是否可移动
+            tempP(1) = prePosition(4,1)+dP(1) - xCheckLimit(4,prePosition(4,1)+dP(1),handles);
+            tempP(2) = prePosition(4,2)+dP(2) - yCheckLimit(4,prePosition(4,2)+dP(2),handles);
+            tempP(3) = prePosition(4,3)+dP(3) - zCheckLimit(4,prePosition(4,3)+dP(3),handles);
+            if tempP(1) ~= 0 || tempP(2) ~= 0 || tempP(3) ~= 0
+                str = ['微操无法移动到该位置',newline];
+                disp(str);
+                return;
+            end
+            %进行协同移动
+            commandMoveReaction(4, 'RELD', dP(1), dP(2), dP(3), handles);     %微操相对移动
+            
+            commandMoveReaction(1, 'RELD', detaP(1), detaP(2), detaP(3), handles);     %显微镜相对移动
+            disp(['协同移动成功',newline]);
+        else
+            %当前控件移动
+            goTo(numSwitch,pDisplay,handles);
+        end
+    else
+        disp(['已经在该位置',newline]);
+    end
+    
 end
 
 
@@ -1323,11 +1723,11 @@ function yMinus_pushbutton_Callback(hObject, eventdata, handles)
 global numSwitch newPosition;
 if get(hObject,'value')
     if get(handles.fine_checkbox,'value')
-        newPosition(numSwitch,2) = newPosition(numSwitch,2) - 0.01;
-        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
-    else
         newPosition(numSwitch,2) = newPosition(numSwitch,2) - 1;
-        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2)/100);
+    else
+        newPosition(numSwitch,2) = newPosition(numSwitch,2) - 100;
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2)/100);
     end
 end
 
@@ -1340,11 +1740,11 @@ function yPlus_pushbutton_Callback(hObject, eventdata, handles)
 global numSwitch newPosition;
 if get(hObject,'value')
     if get(handles.fine_checkbox,'value')
-        newPosition(numSwitch,2) = newPosition(numSwitch,2) + 0.01;
-        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
-    else
         newPosition(numSwitch,2) = newPosition(numSwitch,2) + 1;
-        set(handles.yPosition_edit,'string',newPosition(numSwitch,2));
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2)/100);
+    else
+        newPosition(numSwitch,2) = newPosition(numSwitch,2) + 100;
+        set(handles.yPosition_edit,'string',newPosition(numSwitch,2)/100);
     end
 end
 
@@ -1379,11 +1779,11 @@ function zMinus_pushbutton_Callback(hObject, eventdata, handles)
 global numSwitch newPosition;
 if get(hObject,'value')
     if get(handles.fine_checkbox,'value')
-        newPosition(numSwitch,3) = newPosition(numSwitch,3) - 0.01;
-        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
-    else
         newPosition(numSwitch,3) = newPosition(numSwitch,3) - 1;
-        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3)/100);
+    else
+        newPosition(numSwitch,3) = newPosition(numSwitch,3) - 100;
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3)/100);
     end
 end
 
@@ -1396,11 +1796,11 @@ function zPlus_pushbutton_Callback(hObject, eventdata, handles)
 global numSwitch newPosition;
 if get(hObject,'value')
     if get(handles.fine_checkbox,'value')
-        newPosition(numSwitch,3) = newPosition(numSwitch,3) + 0.01;
-        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
-    else
         newPosition(numSwitch,3) = newPosition(numSwitch,3) + 1;
-        set(handles.zPosition_edit,'string',newPosition(numSwitch,3));
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3)/100);
+    else
+        newPosition(numSwitch,3) = newPosition(numSwitch,3) + 100;
+        set(handles.zPosition_edit,'string',newPosition(numSwitch,3)/100);
     end
 end
 
@@ -1631,3 +2031,272 @@ function Image_display_ButtonDownFcn(hObject, eventdata, handles)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
 pos = get(hObject,'Currentpoint');
+
+
+% --- Executes on button press in pushbutton27.
+function pushbutton27_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton27 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+
+% --- Executes on button press in clickto_pushbutton.
+function clickto_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to clickto_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global numSwitch loc prePosition newPosition;
+if (loc(1) == 0 && loc(2) == 0)
+    disp(['还未获取目标点坐标',newline]);
+    return;
+end
+% 判断坐标是否超过极限,协同需更多
+x = prePosition(numSwitch,1) + round((loc(1,2)-512)*50/3)
+newX = xCheckLimit(numSwitch,x,handles)
+y = prePosition(numSwitch,2) - round((loc(1,1)-688)*50/3)
+newY = yCheckLimit(numSwitch,y,handles)
+if newX ~= x || newY ~= y
+    disp(['目标位置超出显微镜位移极限',newline]);
+    return;
+end
+% 显微镜移动
+commandMoveReaction(1, 'RELD', round((loc(1,2)-512)*50/3), -round((loc(1,1)-688)*50/3), 0, handles);
+%界面更新
+flag = (numSwitch == 1);
+ifmoving = 1;
+while(ifmoving == 1)
+    pause(0.05);
+    ifmoving = checkIsMoving(1,handles);	% 检测当前控件是否移动
+    %{
+    %只更新prePosition
+    newPosition(1,:) = prePosition(1,:);
+    %}
+    %更新当前位置
+    pXYZ = getCurrentPosition(1, handles);     %获取控件位置
+    setNewPosition(1, pXYZ);     %更新全局变量
+    if (flag)
+        refreshGuiPosition(handles)		% 刷新当前显示的坐标
+    end
+end
+loc = zeros(1,2);
+
+%协同移动
+if get(handles.comove_checkbox,'value')
+    
+end
+
+
+
+% --- Executes during object deletion, before destroying properties.
+function PositionBox_DeleteFcn(hObject, eventdata, handles)
+% hObject    handle to PositionBox (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+
+% --- If Enable == 'on', executes on mouse press in 5 pixel border.
+% --- Otherwise, executes on mouse press in 5 pixel border or over PositionBox.
+function PositionBox_ButtonDownFcn(hObject, eventdata, handles)
+% hObject    handle to PositionBox (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+
+% --- Executes on button press in comove_checkbox.
+function comove_checkbox_Callback(hObject, eventdata, handles)
+% hObject    handle to comove_checkbox (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of comove_checkbox
+
+
+% --- Executes on button press in objswitch_pushbutton.
+function objswitch_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to objswitch_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+get(hObject,'value')
+str = get(hObject,'String');
+if (strcmp(str,'×4'))
+    obj = 1;
+else
+    obj = 2;
+end
+setObjective(obj,handles);
+
+
+% --- Executes on button press in pushbutton31.
+function pushbutton31_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton31 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global loc prePosition;
+if get(hObject,'value')
+    str = get(hObject,'string');
+    switch(str)
+        case 'Get' 
+            if loc(1) == 0 && loc(2) == 0
+                disp(['Get the position first.',newline]);
+                return;
+            end
+            set(hObject,'string','Set');
+            tempP = transformImagePositionToMicroscopePosition();
+            text = [num2str(tempP(1)),' ',num2str(tempP(2)),' ',num2str(prePosition(1,3))];
+            set(handles.text23,'string',text);
+            set(handles.text23,'value',1);
+            if get(handles.text25,'value') == 1
+                set(handles.pushbutton33,'Enable','on');
+            end
+            
+        case 'Set'
+            set(hObject,'string','Get');
+            % 开始获取点击的坐标
+    end
+end
+    
+
+
+% --- Executes on button press in pushbutton32.
+function pushbutton32_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton32 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global loc prePosition;
+if get(hObject,'value')
+    str = get(hObject,'string');
+    switch(str)
+        case 'Get' 
+            if loc(1) == 0 && loc(2) == 0
+                disp(['Get the position first.',newline]);
+                return;
+            end
+            set(hObject,'string','Set');
+            tempP = transformImagePositionToMicroscopePosition();
+            text = [num2str(tempP(1)),' ',num2str(tempP(2)),' ',num2str(prePosition(1,3))];
+            set(handles.text25,'string',text);
+            set(handles.text25,'value',1);
+            if get(handles.text23,'value') == 1
+                set(handles.pushbutton33,'Enable','on');
+            end
+            
+        case 'Set'
+            set(hObject,'string','Get');
+            % 开始获取点击的坐标
+    end
+end
+
+
+% --- Executes on button press in pushbutton33.
+function pushbutton33_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton33 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global loc angleOffset angleXOZ;
+% tempP = transformImagePositionToMicroscopePosition();
+
+
+if get(hObject,'value')
+    % get probe position
+    P1 = zeros(1,3);
+    tempstr0 = get(handles.text23,'string');
+    str0 = split(tempstr0,' ');
+    P1(1) = str2num(str0{1});
+    P1(2) = str2num(str0{2});
+    P1(3) = str2num(str0{3});
+    P1
+    % get cell position
+    P2 = zeros(1,3);
+    tempstr0 = get(handles.text25,'string');
+    str0 = split(tempstr0,' ');
+    P2(1) = str2num(str0{1});
+    P2(2) = str2num(str0{2});
+    P2(3) = str2num(str0{3});
+    P2
+    str1 = get(handles.probeCalibration_pushbutton,'FontWeight');
+    if strcmp(str1,'bold')
+        % 测试微操3号
+        % Calibration
+        dx = P2(1) - P1(1)
+        dy = P2(2) - P1(2)
+        dz = P2(3) - P1(3)
+        theta = atan(dy / dx) / pi * 180
+        alpha = atan(sqrt(dx * dx + dy * dy) / dz) / pi * 180
+        
+    else
+        % 测试微操3号
+        % Initialize
+        theta = angleOffset(4) / 180 * pi;
+        alpha = angleXOZ(4) / 180 * pi;
+        dz = P1(3) - P2(3)     % positive
+        Lxoy = dz * tan(alpha)
+        dx = Lxoy * cos(theta)
+        dy = Lxoy * sin(theta)
+        
+    end
+end
+
+% str2 = get(handles.initializeInjectPoint_pushbutton,'FontWeight')
+
+    
+
+
+% --- Executes on button press in pushbutton34.
+function pushbutton34_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton34 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+global loc;
+if get(hObject,'value')
+    loc = zeros(1,2);
+    set(handles.text23,'string','');
+    set(handles.text23,'value',0);
+    set(handles.text25,'string','');
+    set(handles.text25,'value',0);
+    set(handles.config_uipanel,'Visible',0);
+end
+
+
+% --- Executes on button press in probeCalibration_pushbutton.
+function probeCalibration_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to probeCalibration_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject,'value')
+    set(handles.probeCalibration_uipanel,'title','Probe Calibration');
+    set(handles.p1_text,'string','Point1:');
+    set(handles.p2_text,'string','Point2:');
+    set(handles.probeCalibration_pushbutton,'FontWeight','bold');
+    set(handles.initializeInjectPoint_pushbutton,'FontWeight','normal');
+    
+end
+
+
+% --- Executes on button press in initializeInjectPoint_pushbutton.
+function initializeInjectPoint_pushbutton_Callback(hObject, eventdata, handles)
+% hObject    handle to initializeInjectPoint_pushbutton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject,'value')
+    set(handles.probeCalibration_uipanel,'title','Probe Inject Initialization');
+    set(handles.p1_text,'string','P_probe:');
+    set(handles.p2_text,'string','P_cell    :');
+    set(handles.probeCalibration_pushbutton,'FontWeight','normal');
+    set(handles.initializeInjectPoint_pushbutton,'FontWeight','bold');
+    
+end
+
+
+% --- Executes on button press in pushbutton41.
+function pushbutton41_Callback(hObject, eventdata, handles)
+% hObject    handle to pushbutton41 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+if get(hObject,'value')
+    set(handles.config_uipanel,'Visible',1);
+    set(handles.probeCalibration_uipanel,'title','Probe Calibration');
+    set(handles.p1_text,'string','Point1:');
+    set(handles.p2_text,'string','Point2:');
+    set(handles.probeCalibration_pushbutton,'FontWeight','bold');
+    set(handles.pushbutton33,'Enable','off');
+end
