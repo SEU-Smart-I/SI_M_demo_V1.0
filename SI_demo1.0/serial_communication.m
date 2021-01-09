@@ -869,7 +869,7 @@ if elementAvailable(4) == 1
         disp(['串口返回异常',newline]);
         return;
     end
-    msg1 = sendAndGetResponse(4, 'ANGLE', handles);
+    msg1 = sendAndGetResponse(4, 'ANGLE ?', handles);
     msg1 = removeEndEnterChar(msg1);      % 移除字符串末尾的回车
     if isempty(msg1)
         disp(['串口返回异常',newline]);
@@ -2131,7 +2131,7 @@ function pushbutton31_Callback(hObject, eventdata, handles)
 % hObject    handle to pushbutton31 (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-global loc prePosition;
+global loc prePosition elementAvailable;
 if get(hObject,'value')
     str = get(hObject,'string');
     switch(str)
@@ -2142,6 +2142,13 @@ if get(hObject,'value')
             end
             set(hObject,'string','Set');
             tempP = transformImagePositionToMicroscopePosition();
+            % get current Z
+            if (elementAvailable(1) == 1)
+                pXYZ = getCurrentPosition(1, handles);
+                setNewPosition(1,pXYZ);
+            else
+                disp(['Comport is unavailable.',newline]);
+            end
             text = [num2str(tempP(1)),' ',num2str(tempP(2)),' ',num2str(prePosition(1,3))];
             set(handles.text23,'string',text);
             set(handles.text23,'value',1);
@@ -2162,7 +2169,7 @@ function pushbutton32_Callback(hObject, eventdata, handles)
 % hObject    handle to pushbutton32 (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-global loc prePosition;
+global loc prePosition elementAvailable;
 if get(hObject,'value')
     str = get(hObject,'string');
     switch(str)
@@ -2173,6 +2180,13 @@ if get(hObject,'value')
             end
             set(hObject,'string','Set');
             tempP = transformImagePositionToMicroscopePosition();
+            % get current Z, update current position
+            if (elementAvailable(1) == 1)
+                pXYZ = getCurrentPosition(1, handles);
+                setNewPosition(1,pXYZ);
+            else
+                disp(['Comport is unavailable.',newline]);
+            end
             text = [num2str(tempP(1)),' ',num2str(tempP(2)),' ',num2str(prePosition(1,3))];
             set(handles.text25,'string',text);
             set(handles.text25,'value',1);
