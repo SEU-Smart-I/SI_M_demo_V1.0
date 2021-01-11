@@ -1426,38 +1426,41 @@ global obj;
 global CameraOpenFlag;
 global isCameraStopFlag;
 global tb;
+global h;
 CameraOpenFlag = getappdata(handles.figure1, 'isCameraOpened');
-if ~CameraOpenFlag
+if ~CameraOpenFlag 
     set(handles.CameraButton, 'string',"关闭摄像头",'ForegroundColor',[1 0 0]);
     objects = imaqfind;
     delete(objects);
 %     obj = videoinput('winvideo',1,'YUY2_640x480');
     obj = videoinput('pmimaq_2019b', 1, 'PM-Cam 1376x1024'); %开始读图像
-    src = getselectedsource(obj);
-    set(obj,'FramesPerTrigger',1);
-    set(obj,'TriggerRepeat',Inf);
-    set(obj,'FrameGrabInterval',1);
     usbVidRes1 = get(obj,'videoResolution');
     nBands1 = get(obj,'NumberOfBands');
-    axes(handles.Image_display);
-    hImage1 = imshow(zeros(usbVidRes1(2),usbVidRes1(1),nBands1));
-    preview(obj,hImage1);
-    flushdata(obj);
     start(obj);
-%     imwrite(getdata(obj),'C:\Users\xue\Desktop\2.jpg');
+    axes(handles.Image_display);
+    axis off;
+    himage=image(zeros(usbVidRes1(2),usbVidRes1(1),nBands1),'parent', handles.Image_display);
+    h = preview(obj,himage);
+    hold on;  %画中心点
+    plot(usbVidRes1(1)/2,usbVidRes1(2)/2,'ro',usbVidRes1(1)/2,usbVidRes1(2)/2,'r.'); 
+    
+    %% =================1229=================
     isCameraOpened = true;
     setappdata(handles.figure1,'isCameraOpened',isCameraOpened); 
     isCameraStopFlag = false;
+    plot([usbVidRes1(1)-80,usbVidRes1(1)-20],[usbVidRes1(2)-25,usbVidRes1(2)-25],'b','linewidth',2); 
+    text(usbVidRes1(1)-70, usbVidRes1(2)-35,'10 {\mu}m','Color','white','FontSize',7)
+    flushdata(obj)
     tb = text;
     set(gcf,'WindowButtonMotionFcn',@callback);
-    set(hImage1, 'ButtonDownFcn', {@ButtonDowncallback,handles});
+    set(himage, 'ButtonDownFcn', {@ButtonDowncallback,handles});   
 else
     set(hObject, 'String', "开启摄像头",'ForegroundColor',[0 0 1]);  		%设置本按钮文本
     closepreview(obj);
     delete(obj);   
     isCameraOpened = false;
     setappdata(handles.figure1,'isCameraOpened',isCameraOpened); 
-    obj = [];
+    obj = false;
     tb = text;
     set(gcf,'WindowButtonMotionFcn',@callback);
     set(gcf,'WindowButtonDownFcn', {@ButtonDowncallback,handles});
@@ -1475,7 +1478,7 @@ function Image_display_CreateFcn(hObject, eventdata, handles)
 
 % Hint: place code in OpeningFcn to populate Image_display
 global tb;
-global loc;
+% global loc;
 tb = text;
 set(gcf,'WindowButtonMotionFcn',@callback);
 set(gcf, 'WindowButtonDownFcn', @ButtonDowncallback);
@@ -1493,7 +1496,7 @@ function ButtonDowncallback(obj, event, handles)
      global isButtonDown;
      isButtonDown = true;
      loc = get(gca, 'CurrentPoint');
-     loc = loc(1,(1:2))
+     loc = loc(1,(1:2));
      set(tb, 'string', num2str(loc), 'position', loc); 
 %      set(handles.PositionBox,'String',loc);
 
@@ -2314,3 +2317,85 @@ if get(hObject,'value')
     set(handles.probeCalibration_pushbutton,'FontWeight','bold');
     set(handles.pushbutton33,'Enable','off');
 end
+
+
+% --- Executes on button press in PseudocolorButton.
+function PseudocolorButton_Callback(hObject, eventdata, handles)
+% hObject    handle to PseudocolorButton (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of PseudocolorButton
+
+global h obj;
+global CameraOpenFlag;
+
+CameraOpenFlag = getappdata(handles.figure1, 'isCameraOpened');
+PseudocolorFlag = get(hObject,'Value');
+% axes(handles.PseudocolorImage);
+% axis off;
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+while ishandle(h)
+    tmp = get(hObject,'Value');
+    if PseudocolorFlag == 0 && tmp == 0
+        break;
+    end
+    if tmp && CameraOpenFlag
+         %%%%%%%%%%%%%%尖端检测%%%%%%%%%%%%%%%%%
+%     figure(1);
+%     while ishandle(h)%卡帧问题1229
+% %         axes(handles.Image_display);
+%         frame = getsnapshot(obj);
+%         
+%         flushdata(obj);
+% %         imshow(rgb2gray(ycbcr2rgb(frame)));
+%         [out_img, points] = PipDetectFun(rgb2gray(ycbcr2rgb(frame)));
+%         imshow(out_img);
+%         hold on
+%         plot(points.Location(1),points.Location(2),'r*','LineWidth',3);
+%         hold off
+%         drawnow;
+%     end
+     %%%%%%%%%%%%%%%%细胞检测%%%%%%%%%%%%%%%%
+%      DetectFun = MultiFunctions;
+%      figure(1)
+%      while ishandle(h)
+% %          disp("Here")
+%          frame = ycbcr2rgb(getsnapshot(obj));
+%          flushdata(obj);
+%          tic
+%          [cell_location,flag] = DetectFun.CellDetectFun(rgb2gray(frame));
+%          toc
+%          if flag
+%              centroids = cat(1,cell_location.WeightedCentroid);
+% %              [areanum,~] = size(cell_location);
+%              imshow(frame);
+%              hold on
+%              plot(centroids(:,1),centroids(:,2),'r*')
+%     %          for i = 1:areanum
+%     %             plot(centroids(i,1),centroids(i,2),'r*')
+%     %             rectangle('Position',cell_location(i).BoundingBox,'EdgeColor','r','LineWidth',3);
+%     %          end
+%              hold off
+%          end
+%      end
+    %%%%%%%%%%%%%%%%伪彩图%%%%%%%%%%%%%%%%
+    
+   
+            DetectFun = MultiFunctions;
+            figure(1);%1
+%             frame = ycbcr2rgb(getsnapshot(obj));
+            frame = getsnapshot(obj);
+%          flushdata(obj);
+            outimg = DetectFun.ConvertToPseudocolor(frame);
+            imshow(outimg)%1
+    else
+            close(figure(1))
+%             p = ishandle(f1)
+
+            break;
+    end
+end
+    
+     
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
